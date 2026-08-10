@@ -1,0 +1,13 @@
+parameters:
+	ignoreErrors:
+		-
+			message: '#^Method Phattarachai\\DbSnapshotSyncLaravel\\Console\\SedCommand\:\:findSnapshots\(\) should return Illuminate\\Support\\Collection\<int, string\> but returns Illuminate\\Support\\Collection\<int, non\-falsy\-string\>\.$#'
+			identifier: return.type
+			count: 1
+			path: src/Console/SedCommand.php
+
+		-
+			message: '#^Method Phattarachai\\DbSnapshotSyncLaravel\\Http\\Controllers\\SnapshotController\:\:candidates\(\) should return Illuminate\\Support\\Collection\<int, string\> but returns Illuminate\\Support\\Collection\<int, non\-falsy\-string\>\.$#'
+			identifier: return.type
+			count: 1
+			path: src/Http/Controllers/SnapshotController.php
