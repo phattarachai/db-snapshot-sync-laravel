@@ -65,3 +65,16 @@ it('round-trips gzipped snapshots', function () use ($dump): void {
         ->not->toContain('\\restrict')
         ->toContain('CREATE TABLE foo');
 });
+
+it('sanitizes plain content even when the file is mislabeled with a .gz name', function () use ($dump): void {
+    // A source serving an uncompressed dump under a .sql.gz name used to crash
+    // gzdecode(). Detection is by content (magic bytes), not the extension.
+    $this->disk->put('snap.sql.gz', $dump);
+
+    $out = (new PostgresSanitizer(['\\restrict', '\\unrestrict']))->sanitize($this->disk, 'snap.sql.gz');
+
+    expect($out)->toBe('snap.sql.gz');
+    expect($this->disk->get('snap.sql.gz'))
+        ->not->toContain('\\restrict')
+        ->toContain('CREATE TABLE foo');
+});

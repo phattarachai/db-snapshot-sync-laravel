@@ -21,8 +21,8 @@ final class PostgresSanitizer implements Sanitizer
 
     public function sanitize(Filesystem $disk, string $file): string
     {
-        $isGz = str_ends_with($file, '.gz');
         $raw = (string) $disk->get($file);
+        $isGz = str_starts_with($raw, "\x1f\x8b");
         $content = $isGz ? (string) gzdecode($raw) : $raw;
 
         $content = $this->applyPatterns($this->filterLines($content));

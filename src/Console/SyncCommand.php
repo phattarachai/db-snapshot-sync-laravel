@@ -93,18 +93,40 @@ class SyncCommand extends Command
         $this->info('Downloading latest snapshot...');
 
         $disk = Storage::disk((string) config('db-snapshot-sync.disk'));
-        $localName = 'sync_'.now()->format('Y-m-d_H-i-s').'.sql.gz';
-        $localPath = $disk->path($localName);
+        $stem = 'sync_'.now()->format('Y-m-d_H-i-s');
+        $rawName = $stem.'.download';
+        $rawPath = $disk->path($rawName);
 
-        if (! is_dir(dirname($localPath))) {
-            mkdir(dirname($localPath), 0o755, true);
+        if (! is_dir(dirname($rawPath))) {
+            mkdir(dirname($rawPath), 0o755, true);
         }
 
-        $client->withOptions(['sink' => $localPath])
+        $client->withOptions(['sink' => $rawPath])
             ->get('/'.$this->apiPath('snapshots/latest'))
             ->throw();
 
+        // The source may serve either a compressed (.sql.gz) or a plain (.sql)
+        // dump. Name the local file by the payload's real type — sniffed from the
+        // gzip magic bytes — so the sanitizer and snapshot:load agree with the
+        // content instead of a guessed extension.
+        $localName = $stem.($this->isGzip($rawPath) ? '.sql.gz' : '.sql');
+        $disk->move($rawName, $localName);
+
         return $localName;
+    }
+
+    private function isGzip(string $path): bool
+    {
+        $handle = fopen($path, 'rb');
+
+        if ($handle === false) {
+            return false;
+        }
+
+        $magic = (string) fread($handle, 2);
+        fclose($handle);
+
+        return $magic === "\x1f\x8b";
     }
 
     private function sanitize(SanitizerFactory $factory, string $downloaded): string
