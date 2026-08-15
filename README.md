@@ -80,6 +80,12 @@ snapshot — the schema is still dumped, and a project's own rollback snapshots 
 keeps the dev copy small; real domain tables are always included. The Postgres sanitizer streams
 the dump line-by-line, so a multi-GB snapshot sanitizes without loading the whole file into memory.
 
+`dump.rows_per_insert` (default `1000`) batches the sync snapshot into multi-row INSERTs.
+laravel-db-snapshots forces `--inserts` because its loader restores through PDO (which can't stream
+COPY), so a large table otherwise restores one round-trip per row — a million-row table can take
+tens of minutes. Batching cuts that to a couple of statements' worth of work. Applies to the sync
+snapshot only; the committed baseline stays single-row so it keeps diffing line-by-line.
+
 ## Testing
 
 ```bash

@@ -64,6 +64,13 @@ return [
     */
 
     'dump' => [
+        // laravel-db-snapshots forces `--inserts` (its loader restores through PDO,
+        // which can't stream COPY), so without batching a large table restores one
+        // round-trip per row. This dumps N rows per INSERT for the sync snapshot
+        // only — a project's committed baseline keeps single-row INSERTs so it still
+        // diffs line-by-line. Set to null/0 to leave the dump one row per INSERT.
+        'rows_per_insert' => 1000,
+
         'exclude_table_data' => [
             'cache',
             'cache_locks',

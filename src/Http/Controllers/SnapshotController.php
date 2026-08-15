@@ -39,7 +39,7 @@ class SnapshotController
     {
         set_time_limit(0);
 
-        $this->excludeFrameworkTableData();
+        $this->applySyncDumpOptions();
 
         $name = 'sync_'.Carbon::now()->format('Y-m-d_H-i-s');
 
@@ -70,18 +70,25 @@ class SnapshotController
      * but not their (large, disposable) data. Scoped to this request — the deploy's
      * own rollback snapshots read the unmodified config.
      */
-    private function excludeFrameworkTableData(): void
+    /**
+     * Merge the sync-only dump options — framework table-data excludes and
+     * multi-row INSERT batching — into the default connection's dump flags, on
+     * top of the connection's own. Scoped to this request, so a project's rollback
+     * snapshots and committed baseline (which want single-row INSERTs for clean
+     * diffs) read the unmodified config.
+     */
+    private function applySyncDumpOptions(): void
     {
         $tables = array_values(array_filter((array) config('db-snapshot-sync.dump.exclude_table_data', [])));
-
-        if ($tables === []) {
-            return;
-        }
+        $rowsPerInsert = config('db-snapshot-sync.dump.rows_per_insert');
 
         $connection = config('database.default');
         $key = "database.connections.{$connection}.dump.addExtraOption";
 
-        config([$key => DumpOptions::withExcludedTableData((string) config($key, ''), $tables)]);
+        $options = DumpOptions::withExcludedTableData((string) config($key, ''), $tables);
+        $options = DumpOptions::withRowsPerInsert($options, $rowsPerInsert === null ? null : (int) $rowsPerInsert);
+
+        config([$key => $options]);
     }
 
     private function disk(): Filesystem
