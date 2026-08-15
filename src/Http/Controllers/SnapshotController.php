@@ -9,6 +9,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Storage;
+use Phattarachai\DbSnapshotSyncLaravel\Support\DumpOptions;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class SnapshotController
@@ -38,6 +39,8 @@ class SnapshotController
     {
         set_time_limit(0);
 
+        $this->excludeFrameworkTableData();
+
         $name = 'sync_'.Carbon::now()->format('Y-m-d_H-i-s');
 
         Artisan::call('snapshot:create', ['name' => $name, '--compress' => true]);
@@ -59,6 +62,26 @@ class SnapshotController
         abort_if($latest === null, 404, 'No snapshot available.');
 
         return $disk->download($latest);
+    }
+
+    /**
+     * Append `--exclude-table-data` flags for framework/transient tables to the
+     * default connection's dump options, so the sync snapshot carries their schema
+     * but not their (large, disposable) data. Scoped to this request — the deploy's
+     * own rollback snapshots read the unmodified config.
+     */
+    private function excludeFrameworkTableData(): void
+    {
+        $tables = array_values(array_filter((array) config('db-snapshot-sync.dump.exclude_table_data', [])));
+
+        if ($tables === []) {
+            return;
+        }
+
+        $connection = config('database.default');
+        $key = "database.connections.{$connection}.dump.addExtraOption";
+
+        config([$key => DumpOptions::withExcludedTableData((string) config($key, ''), $tables)]);
     }
 
     private function disk(): Filesystem

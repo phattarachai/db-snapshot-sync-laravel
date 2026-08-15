@@ -50,6 +50,38 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Source-side dump
+    |--------------------------------------------------------------------------
+    | When the source builds a fresh snapshot for a sync, the data in these
+    | tables is skipped (schema is still dumped). These are framework caches
+    | and transient queues a dev copy never needs — excluding them keeps the
+    | dump small and fast without touching real domain tables. Applied as
+    | `--exclude-table-data=<table>` on top of the connection's own dump flags,
+    | for the sync dump only; a project's rollback snapshots are unaffected.
+    |
+    | Matched as pg_dump/mysqldump patterns, so listing a table that does not
+    | exist is harmless.
+    */
+
+    'dump' => [
+        'exclude_table_data' => [
+            'cache',
+            'cache_locks',
+            'sessions',
+            'jobs',
+            'job_batches',
+            'failed_jobs',
+            'pulse_aggregates',
+            'pulse_entries',
+            'pulse_values',
+            'telescope_entries',
+            'telescope_entries_tags',
+            'telescope_monitoring',
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | snapshot:load flags
     |--------------------------------------------------------------------------
     | Passed through to spatie's snapshot:load. --stream is required for any

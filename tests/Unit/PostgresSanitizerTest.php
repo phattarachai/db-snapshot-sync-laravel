@@ -55,6 +55,25 @@ it('applies whole-content regex patterns', function (): void {
         ->toContain('CREATE TABLE foo');
 });
 
+it('streams a large dump line-by-line, preserving order and content', function (): void {
+    $lines = [];
+    for ($i = 0; $i < 5000; $i++) {
+        $lines[] = "\\restrict drop{$i}";
+        $lines[] = "INSERT INTO foo VALUES ({$i}, 'keep');";
+    }
+    $this->disk->put('big.sql', implode("\n", $lines)."\n");
+
+    (new PostgresSanitizer(['\\restrict']))->sanitize($this->disk, 'big.sql');
+
+    $result = $this->disk->get('big.sql');
+    expect($result)->not->toContain('\\restrict');
+
+    $kept = explode("\n", trim($result));
+    expect($kept)->toHaveCount(5000)
+        ->and($kept[0])->toBe("INSERT INTO foo VALUES (0, 'keep');")
+        ->and($kept[4999])->toBe("INSERT INTO foo VALUES (4999, 'keep');");
+});
+
 it('round-trips gzipped snapshots', function () use ($dump): void {
     $this->disk->put('snap.sql.gz', gzencode($dump, 9));
 

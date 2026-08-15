@@ -74,6 +74,12 @@ otherwise; the routes carry `throttle:5,1`. The consumer sends the matching toke
 the per-driver sanitizer rules (add a prefix/`sed` expression when a new dump quirk appears), and
 the API's reject-list (never serve a schema-only baseline or a `.sanitized.` intermediate).
 
+`dump.exclude_table_data` lists framework caches and transient queues (`cache`, `sessions`,
+`jobs`, `pulse_*`, `telescope_*`, …) whose **data** is skipped when the source builds a sync
+snapshot — the schema is still dumped, and a project's own rollback snapshots are untouched. This
+keeps the dev copy small; real domain tables are always included. The Postgres sanitizer streams
+the dump line-by-line, so a multi-GB snapshot sanitizes without loading the whole file into memory.
+
 ## Testing
 
 ```bash
