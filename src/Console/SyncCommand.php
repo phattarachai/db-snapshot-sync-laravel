@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Pulse\Facades\Pulse;
 use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\SanitizerFactory;
+use Phattarachai\DbSnapshotSyncLaravel\Support\CaBundle;
 use RuntimeException;
 
 class SyncCommand extends Command
@@ -52,7 +53,14 @@ class SyncCommand extends Command
             return self::FAILURE;
         }
 
-        $client = Http::acceptJson()->baseUrl($baseUrl)->withToken($token)->timeout(0);
+        $caBundle = config('db-snapshot-sync.http.ca_bundle');
+        $verify = CaBundle::resolve(is_string($caBundle) ? $caBundle : null);
+
+        $client = Http::acceptJson()
+            ->baseUrl($baseUrl)
+            ->withToken($token)
+            ->withOptions(['verify' => $verify])
+            ->timeout(0);
 
         $this->info("Source: {$baseUrl}");
 

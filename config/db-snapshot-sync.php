@@ -50,6 +50,26 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Source TLS verification
+    |--------------------------------------------------------------------------
+    | Some edges serve an incomplete certificate chain (they present the leaf
+    | but omit an intermediate). A browser or system `curl` papers over this by
+    | fetching the missing intermediate via the AIA extension, but PHP's cURL
+    | does not, so verification fails with "unable to get local issuer
+    | certificate" (error 60).
+    |
+    | Point this at the missing intermediate's PEM (absolute, or relative to the
+    | app base path). The sync client appends it to the system trust store for
+    | the download only, so the chain still fully verifies. Leave null for
+    | ordinary sources — default verification is used.
+    */
+
+    'http' => [
+        'ca_bundle' => env('DB_SNAPSHOT_SYNC_CA_BUNDLE'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Source-side dump
     |--------------------------------------------------------------------------
     | When the source builds a fresh snapshot for a sync, the data in these

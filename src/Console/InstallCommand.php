@@ -45,6 +45,7 @@ class InstallCommand extends Command
             'DB_SNAPSHOT_SYNC_PROD_URL' => '',
             'DB_SNAPSHOT_SYNC_UAT_URL' => '',
             'DB_SNAPSHOT_SYNC_API' => 'false',
+            'DB_SNAPSHOT_SYNC_CA_BUNDLE' => '',
         ];
 
         if ($dryRun) {
