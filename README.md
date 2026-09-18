@@ -86,6 +86,15 @@ COPY), so a large table otherwise restores one round-trip per row — a million-
 tens of minutes. Batching cuts that to a couple of statements' worth of work. Applies to the sync
 snapshot only; the committed baseline stays single-row so it keeps diffing line-by-line.
 
+### Sources with an incomplete TLS chain
+
+Some edges serve the leaf certificate but omit an intermediate. A browser or system `curl` fetches
+the missing intermediate via the certificate's AIA extension, but PHP's cURL does not, so the sync
+download fails with `cURL error 60: unable to get local issuer certificate`. Point
+`DB_SNAPSHOT_SYNC_CA_BUNDLE` (config `http.ca_bundle`) at the missing intermediate's PEM (absolute,
+or relative to the app base path) and the client appends it to the system trust store for the
+download only — the chain still fully verifies. Leave it unset for ordinary sources.
+
 ## Testing
 
 ```bash
