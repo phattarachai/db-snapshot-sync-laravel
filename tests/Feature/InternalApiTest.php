@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Storage;
+use Phattarachai\DbSnapshotSyncLaravel\Support\MySqlTableDataExclusion;
 
 beforeEach(function (): void {
     $this->disk = Storage::fake('snapshots');
@@ -71,16 +72,35 @@ it('adds the pg_dump sync flags to the pgsql connection when creating a snapshot
     expect($seen())->toBe('--no-owner --exclude-table-data=cache --rows-per-insert=500');
 });
 
-it('leaves a mysql connection\'s dump options untouched when creating a snapshot', function (): void {
+it('ignores the existing excluded tables on mysql, then appends their schema', function (): void {
+    config(['database.default' => 'mysql']);
+    config(['database.connections.mysql.driver' => 'mysql']);
+    config(['database.connections.mysql.database' => 'app']);
+    config(['database.connections.mysql.dump.addExtraOption' => '--column-statistics=0']);
+    config(['db-snapshot-sync.dump.exclude_table_data' => ['cache', 'jobs', 'missing']]);
+
+    $mysql = fakeMySqlExclusion(['cache', 'jobs']);
+    $seen = fakeSnapshotCreate($this->disk, 'mysql');
+
+    $name = $this->withToken('secret-token')->postJson('/internal/snapshots')->assertOk()->json('name');
+
+    expect($seen())->toBe('--column-statistics=0 --ignore-table=app.cache --ignore-table=app.jobs')
+        ->and($mysql->appended)->toBe([['mysql', ['cache', 'jobs'], $this->disk->path($name)]])
+        ->and(config('database.connections.mysql.dump.addExtraOption'))->toBe('--column-statistics=0');
+});
+
+it('leaves a mysql connection untouched when no excluded table exists', function (): void {
     config(['database.default' => 'mysql']);
     config(['database.connections.mysql.driver' => 'mysql']);
     config(['database.connections.mysql.dump.addExtraOption' => '--column-statistics=0']);
 
+    $mysql = fakeMySqlExclusion([]);
     $seen = fakeSnapshotCreate($this->disk, 'mysql');
 
     $this->withToken('secret-token')->postJson('/internal/snapshots')->assertOk();
 
-    expect($seen())->toBe('--column-statistics=0');
+    expect($seen())->toBe('--column-statistics=0')
+        ->and($mysql->appended)->toBe([]);
 });
 
 it('never writes an empty addExtraOption when there is nothing to add', function (): void {
@@ -95,6 +115,38 @@ it('never writes an empty addExtraOption when there is nothing to add', function
     expect($seen())->toBe('<unset>')
         ->and(config('database.connections.pgsql.dump'))->toBe(['useInserts']);
 });
+
+/**
+ * Bind a MySqlTableDataExclusion that reports the given tables as existing and
+ * records appendSchema() calls instead of running mysqldump.
+ *
+ * @param  list<string>  $existing
+ */
+function fakeMySqlExclusion(array $existing): MySqlTableDataExclusion
+{
+    $fake = new class($existing) extends MySqlTableDataExclusion
+    {
+        /** @var list<array{string, list<string>, string}> */
+        public array $appended = [];
+
+        /** @param list<string> $tables */
+        public function __construct(private array $tables) {}
+
+        public function existing(string $connection, array $tables): array
+        {
+            return array_values(array_intersect($tables, $this->tables));
+        }
+
+        public function appendSchema(string $connection, array $tables, string $path): void
+        {
+            $this->appended[] = [$connection, $tables, $path];
+        }
+    };
+
+    app()->instance(MySqlTableDataExclusion::class, $fake);
+
+    return $fake;
+}
 
 /**
  * Swap snapshot:create for a stub that records the connection's addExtraOption

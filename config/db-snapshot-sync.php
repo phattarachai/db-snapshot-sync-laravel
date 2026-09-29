@@ -75,17 +75,17 @@ return [
     | When the source builds a fresh snapshot for a sync, the data in these
     | tables is skipped (schema is still dumped). These are framework caches
     | and transient queues a dev copy never needs — excluding them keeps the
-    | dump small and fast without touching real domain tables. Applied as
-    | `--exclude-table-data=<table>` on top of the connection's own dump flags,
-    | for the sync dump only; a project's rollback snapshots are unaffected.
+    | dump small and fast, and keeps session payloads off dev machines, without
+    | touching real domain tables. For the sync dump only; a project's rollback
+    | snapshots are unaffected. Listing a table that does not exist is harmless.
     |
-    | Matched as pg_dump patterns, so listing a table that does not exist is
-    | harmless.
+    | PostgreSQL: `--exclude-table-data=<table>` on top of the connection's own
+    | dump flags. MySQL/MariaDB: mysqldump has no per-table "schema but no
+    | data" flag, so the main dump `--ignore-table`s them and a `--no-data`
+    | dump of just those tables is appended to the snapshot.
     |
-    | PostgreSQL only. mysqldump has no per-table "schema but no data" flag
-    | (`--ignore-table` drops the schema too) and already batches rows via its
-    | default `--extended-insert`, so on mysql/mariadb both settings are ignored
-    | and the connection's own dump flags are left as they are.
+    | `rows_per_insert` is PostgreSQL-only — mysqldump's default
+    | `--extended-insert` already batches rows.
     */
 
     'dump' => [

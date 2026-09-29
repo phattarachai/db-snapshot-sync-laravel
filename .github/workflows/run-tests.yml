@@ -27,6 +27,16 @@ jobs:
 
     name: P${{ matrix.php }} - L${{ matrix.laravel }} - ${{ matrix.stability }}
 
+    # A real server + mysqldump for the MySQL two-pass sync dump test.
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: password
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping -ppassword" --health-interval=5s --health-timeout=5s --health-retries=20
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -45,3 +55,6 @@ jobs:
 
       - name: Run tests
         run: vendor/bin/pest
+        env:
+          DB_SNAPSHOT_SYNC_MYSQL_HOST: 127.0.0.1
+          DB_SNAPSHOT_SYNC_MYSQL_PASSWORD: password

@@ -13,9 +13,9 @@ final class DumpOptions
      * string, which throws).
      *
      * Only pg_dump understands `--exclude-table-data` and `--rows-per-insert`.
-     * mysqldump has no per-table "schema but no data" flag (`--ignore-table`
-     * drops the schema too), and its `--extended-insert` default already batches
-     * rows, so mysql/mariadb get neither.
+     * mysql/mariadb exclude table data with a two-pass dump instead (see
+     * MySqlTableDataExclusion), and mysqldump's `--extended-insert` default
+     * already batches rows.
      *
      * @param  list<string>  $excludeTableData
      */
@@ -28,6 +28,23 @@ final class DumpOptions
         $options = self::withRowsPerInsert(self::withExcludedTableData($existing, $excludeTableData), $rowsPerInsert);
 
         return $options === trim($existing) ? null : $options;
+    }
+
+    /**
+     * Append `--ignore-table=<db>.<table>` flags for mysqldump's main sync pass.
+     * mysqldump requires the database-qualified name; a table that does not exist
+     * is ignored harmlessly.
+     *
+     * @param  list<string>  $tables
+     */
+    public static function withIgnoredTables(string $existing, string $database, array $tables): string
+    {
+        $flags = array_map(
+            static fn (string $table): string => '--ignore-table='.$database.'.'.$table,
+            array_values(array_filter($tables)),
+        );
+
+        return trim(trim($existing).' '.implode(' ', $flags));
     }
 
     /**
