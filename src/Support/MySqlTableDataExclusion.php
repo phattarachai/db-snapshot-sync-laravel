@@ -73,7 +73,8 @@ class MySqlTableDataExclusion
         $schemaFile = (string) tempnam(sys_get_temp_dir(), 'db-snapshot-sync-');
 
         try {
-            $dumper->includeTables($tables)->doNotDumpData()->dumpToFile($schemaFile);
+            // A plain flag rather than doNotDumpData(), which older db-dumper releases (3.4) lack.
+            $dumper->includeTables($tables)->addExtraOption('--no-data')->dumpToFile($schemaFile);
 
             $sql = (string) file_get_contents($schemaFile);
 
