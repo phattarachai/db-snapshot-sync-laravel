@@ -79,8 +79,13 @@ return [
     | `--exclude-table-data=<table>` on top of the connection's own dump flags,
     | for the sync dump only; a project's rollback snapshots are unaffected.
     |
-    | Matched as pg_dump/mysqldump patterns, so listing a table that does not
-    | exist is harmless.
+    | Matched as pg_dump patterns, so listing a table that does not exist is
+    | harmless.
+    |
+    | PostgreSQL only. mysqldump has no per-table "schema but no data" flag
+    | (`--ignore-table` drops the schema too) and already batches rows via its
+    | default `--extended-insert`, so on mysql/mariadb both settings are ignored
+    | and the connection's own dump flags are left as they are.
     */
 
     'dump' => [

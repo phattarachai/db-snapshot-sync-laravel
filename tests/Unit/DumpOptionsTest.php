@@ -34,3 +34,18 @@ it('leaves the dump unchanged for a null or non-positive rows-per-insert', funct
     expect(DumpOptions::withRowsPerInsert('--no-owner', 0))->toBe('--no-owner');
     expect(DumpOptions::withRowsPerInsert('--no-owner', -5))->toBe('--no-owner');
 });
+
+it('builds exclude-table-data and rows-per-insert for pgsql', function (): void {
+    expect(DumpOptions::forSync('pgsql', '--no-owner', ['cache', 'jobs'], 1000))
+        ->toBe('--no-owner --exclude-table-data=cache --exclude-table-data=jobs --rows-per-insert=1000');
+});
+
+it('adds no pg_dump-only flags for mysql or mariadb', function (string $driver): void {
+    expect(DumpOptions::forSync($driver, '--column-statistics=0', ['cache', 'jobs'], 1000))->toBeNull();
+    expect(DumpOptions::forSync($driver, '', ['cache'], 1000))->toBeNull();
+})->with(['mysql', 'mariadb', 'sqlite']);
+
+it('returns null for pgsql when there is nothing to add', function (): void {
+    expect(DumpOptions::forSync('pgsql', '', [], null))->toBeNull();
+    expect(DumpOptions::forSync('pgsql', '--no-owner', ['', ''], 0))->toBeNull();
+});

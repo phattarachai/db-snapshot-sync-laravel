@@ -86,6 +86,14 @@ COPY), so a large table otherwise restores one round-trip per row — a million-
 tens of minutes. Batching cuts that to a couple of statements' worth of work. Applies to the sync
 snapshot only; the committed baseline stays single-row so it keeps diffing line-by-line.
 
+Both `dump.*` settings are **PostgreSQL-only** — they become the pg_dump flags
+`--exclude-table-data` and `--rows-per-insert`. On a `mysql`/`mariadb` connection they are ignored
+and the connection's `dump.addExtraOption` is left untouched: mysqldump has no per-table
+"schema but no data" flag (`--ignore-table` drops the schema too), and its default
+`--extended-insert` already batches rows. A MySQL sync snapshot therefore includes framework-table
+data. If your source runs MariaDB's client, you can add its `--ignore-table-data=<db>.<table>` to the
+connection's own `dump.addExtraOption` yourself.
+
 ### Sources with an incomplete TLS chain
 
 Some edges serve the leaf certificate but omit an intermediate. A browser or system `curl` fetches
