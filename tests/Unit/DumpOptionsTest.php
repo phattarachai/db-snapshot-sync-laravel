@@ -49,3 +49,9 @@ it('returns null for pgsql when there is nothing to add', function (): void {
     expect(DumpOptions::forSync('pgsql', '', [], null))->toBeNull();
     expect(DumpOptions::forSync('pgsql', '--no-owner', ['', ''], 0))->toBeNull();
 });
+
+it('appends database-qualified ignore-table flags for mysqldump', function (): void {
+    expect(DumpOptions::withIgnoredTables('--column-statistics=0', 'app', ['cache', '', 'jobs']))
+        ->toBe('--column-statistics=0 --ignore-table=app.cache --ignore-table=app.jobs');
+    expect(DumpOptions::withIgnoredTables('', 'app', ['sessions']))->toBe('--ignore-table=app.sessions');
+});

@@ -86,13 +86,17 @@ COPY), so a large table otherwise restores one round-trip per row — a million-
 tens of minutes. Batching cuts that to a couple of statements' worth of work. Applies to the sync
 snapshot only; the committed baseline stays single-row so it keeps diffing line-by-line.
 
-Both `dump.*` settings are **PostgreSQL-only** — they become the pg_dump flags
-`--exclude-table-data` and `--rows-per-insert`. On a `mysql`/`mariadb` connection they are ignored
-and the connection's `dump.addExtraOption` is left untouched: mysqldump has no per-table
-"schema but no data" flag (`--ignore-table` drops the schema too), and its default
-`--extended-insert` already batches rows. A MySQL sync snapshot therefore includes framework-table
-data. If your source runs MariaDB's client, you can add its `--ignore-table-data=<db>.<table>` to the
-connection's own `dump.addExtraOption` yourself.
+On **PostgreSQL** the exclusion is pg_dump's `--exclude-table-data`. **MySQL/MariaDB**'s mysqldump
+has no per-table "schema but no data" flag (`--ignore-table` drops the schema too), so the sync
+dump runs in two passes: the main dump `--ignore-table`s the excluded tables, then a `--no-data`
+dump of just those tables (the ones that exist, checked in `information_schema`) is appended to the
+snapshot as a second gzip member. `gunzip`, `zcat` and spatie's `snapshot:load --stream` read the
+whole file; PHP's `gzdecode()` (spatie's non-streamed load) stops at the first member, so load a raw
+MySQL sync snapshot with `--stream`. `snapshot:sync` already does both: the MySQL sanitizer
+recompresses the file into a single member.
+
+`dump.rows_per_insert` is PostgreSQL-only (it becomes `--rows-per-insert`); mysqldump's default
+`--extended-insert` already batches rows.
 
 ### Sources with an incomplete TLS chain
 
