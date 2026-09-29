@@ -8,7 +8,9 @@ use Illuminate\Console\Command;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
+use InvalidArgumentException;
 use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\SanitizerFactory;
+use Phattarachai\DbSnapshotSyncLaravel\Support\DumpEngine;
 
 use function Laravel\Prompts\select;
 
@@ -16,7 +18,9 @@ class SedCommand extends Command
 {
     protected $signature = 'snapshot:sed
         {name? : The snapshot filename on the snapshots disk}
-        {--latest : Use the most recent snapshot}';
+        {--latest : Use the most recent snapshot}
+        {--connection= : Sanitize for this connection\'s driver (default: the dump\'s own engine, else the default connection)}
+        {--driver= : Sanitize for this driver (mysql, mariadb or pgsql) instead of a connection\'s}';
 
     protected $description = 'Strip dump-tool directives that reject on a local DB client so a snapshot re-imports cleanly.';
 
@@ -40,11 +44,47 @@ class SedCommand extends Command
             return self::FAILURE;
         }
 
-        $output = $factory->forDefaultConnection()->sanitize($disk, $file);
+        $engine = DumpEngine::detect($disk->path($file));
+
+        try {
+            $driver = $this->resolveDriver($factory, $engine);
+            $sanitizer = $factory->for($driver);
+        } catch (InvalidArgumentException $e) {
+            $this->error($e->getMessage());
+
+            return self::FAILURE;
+        }
+
+        if ($engine !== null && $engine !== DumpEngine::forDriver($driver)) {
+            $this->error("{$file} is a ".DumpEngine::label($engine)." dump, but the {$driver} sanitizer was requested. Nothing was changed.");
+
+            return self::FAILURE;
+        }
+
+        $output = $sanitizer->sanitize($disk, $file);
 
         $this->info('Sanitized: '.$file.($output === $file ? '' : " → {$output}"));
 
         return self::SUCCESS;
+    }
+
+    /**
+     * An explicit --driver or --connection wins. Without either, a snapshot is
+     * sanitized for the engine that wrote it — a MySQL dump on an app whose
+     * default connection is pgsql still gets the MySQL rules — falling back to
+     * the default connection's driver when the header names neither engine.
+     */
+    private function resolveDriver(SanitizerFactory $factory, ?string $engine): string
+    {
+        $driver = $this->option('driver');
+        $connection = $this->option('connection');
+
+        return match (true) {
+            is_string($driver) && $driver !== '' && is_string($connection) && $connection !== '' => throw new InvalidArgumentException('Pass either --driver or --connection, not both.'),
+            is_string($driver) && $driver !== '' => $driver,
+            is_string($connection) && $connection !== '' => $factory->driverOf($connection),
+            default => $engine ?? $factory->driverOf((string) config('database.default')),
+        };
     }
 
     /**

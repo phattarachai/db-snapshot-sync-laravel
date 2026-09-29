@@ -6,11 +6,15 @@ namespace Phattarachai\DbSnapshotSyncLaravel\Console;
 
 use Illuminate\Console\Command;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use InvalidArgumentException;
 use Laravel\Pulse\Facades\Pulse;
+use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\Sanitizer;
 use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\SanitizerFactory;
 use Phattarachai\DbSnapshotSyncLaravel\Support\CaBundle;
+use Phattarachai\DbSnapshotSyncLaravel\Support\DumpEngine;
 use RuntimeException;
 
 class SyncCommand extends Command
@@ -18,6 +22,7 @@ class SyncCommand extends Command
     protected $signature = 'snapshot:sync
         {--fresh : Trigger a brand-new snapshot on the source before downloading (slow)}
         {--source=production : Source key from config db-snapshot-sync.sources (prod is an alias)}
+        {--connection= : Local connection to sanitize for and load into (default: the source\'s "connection", else the default connection)}
         {--no-load : Download + sanitize only, skip loading into the local DB}
         {--keep-raw : Keep the raw download when the sanitizer writes a separate file}';
 
@@ -37,10 +42,22 @@ class SyncCommand extends Command
             return self::FAILURE;
         }
 
-        $baseUrl = $this->resolveSource();
+        $source = $this->resolveSource();
 
-        if ($baseUrl === null) {
+        if ($source === null) {
             $this->error("Unknown or unconfigured --source={$this->option('source')}.");
+
+            return self::FAILURE;
+        }
+
+        $baseUrl = $source['url'];
+        $connection = $this->targetConnection($source['connection']);
+
+        try {
+            $driver = $factory->driverOf($connection);
+            $sanitizer = $factory->for($driver);
+        } catch (InvalidArgumentException $e) {
+            $this->error($e->getMessage());
 
             return self::FAILURE;
         }
@@ -63,16 +80,22 @@ class SyncCommand extends Command
             ->timeout(0);
 
         $this->info("Source: {$baseUrl}");
+        $this->info("Target connection: {$connection} ({$driver})");
 
         if ($this->option('fresh')) {
             $this->triggerFreshSnapshot($client);
         }
 
         $downloaded = $this->downloadLatest($client);
-        $loadable = $this->sanitize($factory, $downloaded);
+
+        if (! $this->engineMatches($downloaded, $connection, $driver)) {
+            return self::FAILURE;
+        }
+
+        $loadable = $this->sanitize($sanitizer, $downloaded);
 
         if (! $this->option('no-load')) {
-            $this->loadIntoLocalDb($loadable);
+            $this->loadIntoLocalDb($loadable, $connection);
         }
 
         $this->cleanUpRaw($downloaded, $loadable);
@@ -82,12 +105,60 @@ class SyncCommand extends Command
         return self::SUCCESS;
     }
 
-    private function resolveSource(): ?string
+    /**
+     * A source is either a plain base URL or ['url' => ..., 'connection' => ...].
+     *
+     * @return array{url: string, connection: ?string}|null
+     */
+    private function resolveSource(): ?array
     {
         $key = $this->option('source') === 'prod' ? 'production' : (string) $this->option('source');
-        $url = config("db-snapshot-sync.sources.{$key}");
+        $entry = config("db-snapshot-sync.sources.{$key}");
+        $url = is_array($entry) ? ($entry['url'] ?? null) : $entry;
 
-        return is_string($url) && $url !== '' ? $url : null;
+        if (! is_string($url) || $url === '') {
+            return null;
+        }
+
+        $connection = is_array($entry) ? ($entry['connection'] ?? null) : null;
+
+        return [
+            'url' => $url,
+            'connection' => is_string($connection) && $connection !== '' ? $connection : null,
+        ];
+    }
+
+    private function targetConnection(?string $sourceConnection): string
+    {
+        $option = $this->option('connection');
+
+        if (is_string($option) && $option !== '') {
+            return $option;
+        }
+
+        return $sourceConnection ?? (string) config('database.default');
+    }
+
+    /**
+     * Refuse a dump written by the other engine before it is sanitized or loaded:
+     * snapshot:load drops every table on the target first and only then fails on
+     * the foreign SQL. A dump whose header names neither engine is let through.
+     */
+    private function engineMatches(string $downloaded, string $connection, string $driver): bool
+    {
+        $disk = Storage::disk((string) config('db-snapshot-sync.disk'));
+        $engine = DumpEngine::detect($disk->path($downloaded));
+
+        if ($engine === null || $engine === DumpEngine::forDriver($driver)) {
+            return true;
+        }
+
+        $this->error(
+            "{$downloaded} is a ".DumpEngine::label($engine)." dump, but connection [{$connection}] uses the {$driver} driver. "
+            .'Nothing was sanitized or loaded. Pass --connection=<a matching connection>, or set the source\'s "connection" in config db-snapshot-sync.sources.'
+        );
+
+        return false;
     }
 
     private function triggerFreshSnapshot(PendingRequest $client): void
@@ -137,22 +208,25 @@ class SyncCommand extends Command
         return $magic === "\x1f\x8b";
     }
 
-    private function sanitize(SanitizerFactory $factory, string $downloaded): string
+    private function sanitize(Sanitizer $sanitizer, string $downloaded): string
     {
         $this->info('Sanitizing...');
 
         $disk = Storage::disk((string) config('db-snapshot-sync.disk'));
 
-        return $factory->forDefaultConnection()->sanitize($disk, $downloaded);
+        return $sanitizer->sanitize($disk, $downloaded);
     }
 
-    private function loadIntoLocalDb(string $name): void
+    private function loadIntoLocalDb(string $name, string $connection): void
     {
-        $this->info('Loading into local DB...');
+        $this->info("Loading into local DB [{$connection}]...");
 
         $flags = (array) config('db-snapshot-sync.load', []);
 
-        $arguments = ['name' => preg_replace('/\.sql(\.gz)?$/', '', $name)];
+        $arguments = [
+            'name' => preg_replace('/\.sql(\.gz)?$/', '', $name),
+            '--connection' => $connection,
+        ];
 
         foreach ($flags as $flag => $enabled) {
             if ($enabled) {
@@ -160,7 +234,20 @@ class SyncCommand extends Command
             }
         }
 
-        if ($this->call('snapshot:load', $arguments) !== self::SUCCESS) {
+        $default = DB::getDefaultConnection();
+
+        try {
+            $status = $this->call('snapshot:load', $arguments);
+        } finally {
+            // spatie's Snapshot::load() makes the target the default connection and
+            // never switches back, and a pg_dump leaves search_path = '' on the pooled
+            // connection. Restore both so a caller running snapshot:sync in-process
+            // (e.g. from another command) keeps its own default and a clean session.
+            DB::setDefaultConnection($default);
+            DB::purge($connection);
+        }
+
+        if ($status !== self::SUCCESS) {
             throw new RuntimeException('snapshot:load failed.');
         }
     }

@@ -23,3 +23,17 @@ it('resolves from the default connection driver', function (): void {
 it('throws for an unsupported driver', function (): void {
     app(SanitizerFactory::class)->for('sqlite');
 })->throws(InvalidArgumentException::class, 'Unsupported database driver [sqlite]');
+
+it('resolves from a named connection driver, whatever the default', function (): void {
+    config([
+        'database.default' => 'pgsql',
+        'database.connections.pgsql.driver' => 'pgsql',
+        'database.connections.legacy.driver' => 'mysql',
+    ]);
+
+    expect(app(SanitizerFactory::class)->forConnection('legacy'))->toBeInstanceOf(MySqlSanitizer::class);
+});
+
+it('throws for a connection that is not configured', function (): void {
+    app(SanitizerFactory::class)->forConnection('nope');
+})->throws(InvalidArgumentException::class, 'Database connection [nope] is not configured.');

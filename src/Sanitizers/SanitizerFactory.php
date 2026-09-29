@@ -13,9 +13,23 @@ final readonly class SanitizerFactory
 
     public function forDefaultConnection(): Sanitizer
     {
-        $connection = (string) $this->config->get('database.default');
+        return $this->forConnection((string) $this->config->get('database.default'));
+    }
 
-        return $this->for((string) $this->config->get("database.connections.{$connection}.driver"));
+    public function forConnection(string $connection): Sanitizer
+    {
+        return $this->for($this->driverOf($connection));
+    }
+
+    public function driverOf(string $connection): string
+    {
+        $driver = $this->config->get("database.connections.{$connection}.driver");
+
+        if (! is_string($driver) || $driver === '') {
+            throw new InvalidArgumentException("Database connection [{$connection}] is not configured.");
+        }
+
+        return $driver;
     }
 
     public function for(string $driver): Sanitizer

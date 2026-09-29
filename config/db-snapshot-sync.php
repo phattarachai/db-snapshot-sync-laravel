@@ -31,6 +31,18 @@ return [
     |--------------------------------------------------------------------------
     | Base URLs `snapshot:sync --source=<key>` can pull from. `prod` is an
     | accepted alias for `production`.
+    |
+    | A source whose engine differs from the local default connection (e.g. a
+    | MySQL production synced into an app whose default is now pgsql) names
+    | the local connection to sanitize for and load into:
+    |
+    |   'production' => [
+    |       'url' => env('DB_SNAPSHOT_SYNC_PROD_URL'),
+    |       'connection' => 'mysql',
+    |   ],
+    |
+    | `--connection=<name>` overrides it per run. Without either, the default
+    | connection is used.
     */
 
     'sources' => [

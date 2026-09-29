@@ -42,11 +42,13 @@ source-side snippets you paste into `config/db-snapshots.php`, `config/filesyste
 
 ## Commands
 
-- **`snapshot:sed {name?} {--latest}`** — sanitize a snapshot on the disk so it re-imports
-  cleanly. Postgres mutates in place; MySQL writes a separate `.sanitized.sql.gz`.
-- **`snapshot:sync {--fresh} {--source=production} {--no-load} {--keep-raw}`** — pull the latest
-  snapshot from a source, sanitize, and load into the local DB. Runs only in the environments
-  listed in `db-snapshot-sync.sync.allowed_environments`.
+- **`snapshot:sed {name?} {--latest} {--connection=} {--driver=}`** — sanitize a snapshot on the
+  disk so it re-imports cleanly. Postgres mutates in place; MySQL writes a separate
+  `.sanitized.sql.gz`. Without `--connection`/`--driver` it uses the rules for the engine named in
+  the dump's header, falling back to the default connection's driver.
+- **`snapshot:sync {--fresh} {--source=production} {--connection=} {--no-load} {--keep-raw}`** —
+  pull the latest snapshot from a source, sanitize, and load into the local DB. Runs only in the
+  environments listed in `db-snapshot-sync.sync.allowed_environments`.
 
 Start with a dry run once the source URLs are set:
 
@@ -54,6 +56,63 @@ Start with a dry run once the source URLs are set:
 php artisan snapshot:sync --no-load     # download + sanitize, no DB clobber
 php artisan snapshot:sync               # full sync from production
 ```
+
+## Cross-engine and multi-connection sync
+
+By default `snapshot:sync` sanitizes for, and loads into, the app's **default** connection. When a
+source's engine differs from that — say production is still MySQL while the app's local default
+has moved to PostgreSQL — name the local connection the dump belongs to, either per run:
+
+```bash
+php artisan snapshot:sync --source=production --connection=mysql
+```
+
+or once, on the source in `config/db-snapshot-sync.php` (the plain-string form keeps working):
+
+```php
+'sources' => [
+    'production' => [
+        'url' => env('DB_SNAPSHOT_SYNC_PROD_URL'),
+        'connection' => 'mysql',
+    ],
+    'dev' => env('DB_SNAPSHOT_SYNC_DEV_URL'),   // PG → PG, default connection
+],
+```
+
+A source URL is a base URL, so it may carry a path: a source that serves the API under `/api`
+(`/api/internal/snapshots`) is `'url' => 'https://example.com/api'`.
+
+`--connection` wins over the source's `connection`, which wins over `database.default`. The
+connection's driver picks the sanitizer (so a MySQL dump gets its `DEFINER=` lines stripped even
+when the default is `pgsql`), and the name is passed to `snapshot:load --connection`.
+
+**Engine guard.** Before sanitizing, the sync reads the dump's header (`-- MySQL dump` /
+`-- MariaDB dump` vs `-- PostgreSQL database dump`, gzipped or not). If it names a different engine
+from the target connection's driver, the sync stops with an error — nothing is sanitized or
+loaded, and the download stays on the disk. Without this, `snapshot:load --drop-tables` would
+drop every table on the wrong database first and only then fail on the foreign SQL. A dump whose
+header names neither engine is let through. `snapshot:sed --connection`/`--driver` applies the
+same check.
+
+**Loading into a non-default connection in-process.** spatie's `Snapshot::load($connection)` calls
+`DB::setDefaultConnection($connection)` and never restores it, and a `pg_dump` leaves
+`search_path = ''` on the connection it ran through. `snapshot:sync` puts the caller's default
+connection back and purges the target connection after the load, so a command that calls
+`snapshot:sync` and then keeps querying sees its own default and a fresh session. If you call
+spatie's `snapshot:load --connection=…` directly, do the same:
+
+```php
+$default = DB::getDefaultConnection();
+
+try {
+    Artisan::call('snapshot:load', ['name' => $name, '--connection' => 'mysql', '--stream' => true, '--force' => true]);
+} finally {
+    DB::setDefaultConnection($default);
+    DB::purge('mysql');
+}
+```
+
+The source side is unchanged: the internal API dumps the source app's own default connection.
 
 ## The source-side API
 
