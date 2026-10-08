@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
 
 $dump = "\\restrict abc\nSET transaction_timeout = 0;\nCREATE TABLE foo (id int);\n";
 $pgDump = "--\n-- PostgreSQL database dump\n--\n\\restrict abc\nCREATE TABLE foo (id int);\n";
@@ -28,6 +29,38 @@ function fakeSnapshotLoad(): ArrayObject
         $calls['drop-tables'] = $this->option('drop-tables');
 
         DB::setDefaultConnection((string) $this->option('connection'));
+    });
+
+    return $calls;
+}
+
+/**
+ * Stand in for the psql loader a pgsql target uses instead of snapshot:load.
+ *
+ * @return ArrayObject<string, mixed> the arguments the sync passed, once it runs
+ */
+function fakePsqlLoad(?Throwable $failWith = null): ArrayObject
+{
+    $calls = new ArrayObject;
+
+    app()->instance(PsqlLoader::class, new class($calls, $failWith) extends PsqlLoader
+    {
+        /** @param ArrayObject<string, mixed> $calls */
+        public function __construct(private readonly ArrayObject $calls, private readonly ?Throwable $failWith)
+        {
+            parent::__construct();
+        }
+
+        public function load(string $path, string $connection, bool $dropTables = true): void
+        {
+            $this->calls['path'] = $path;
+            $this->calls['connection'] = $connection;
+            $this->calls['drop-tables'] = $dropTables;
+
+            if ($this->failWith instanceof Throwable) {
+                throw $this->failWith;
+            }
+        }
     });
 
     return $calls;
@@ -149,7 +182,7 @@ it('lets --connection override the source connection', function () use ($pgDump)
     ]);
     Storage::fake('snapshots');
     Http::fake(['source.test/*' => Http::response($pgDump)]);
-    $load = fakeSnapshotLoad();
+    $load = fakePsqlLoad();
 
     $this->artisan('snapshot:sync', ['--connection' => 'pgsql'])->assertSuccessful();
 
@@ -163,19 +196,49 @@ it('keeps a PG to PG sync on the default connection, sanitized in place', functi
     ]);
     $disk = Storage::fake('snapshots');
     Http::fake(['source.test/*' => Http::response(gzencode($pgDump, 9))]);
-    $load = fakeSnapshotLoad();
+    $snapshotLoad = fakeSnapshotLoad();
+    $load = fakePsqlLoad();
 
     $this->artisan('snapshot:sync')
         ->assertSuccessful()
         ->expectsOutputToContain('Target connection: pgsql (pgsql)');
 
+    expect($snapshotLoad->count())->toBe(0);
     expect($load['connection'])->toBe('pgsql');
     expect($load['drop-tables'])->toBeTrue();
     expect(DB::getDefaultConnection())->toBe('pgsql');
 
     $files = $disk->files();
     expect($files)->toHaveCount(1);
+    expect($load['path'])->toBe($disk->path($files[0]));
     expect(gzdecode($disk->get($files[0])))->not->toContain('\\restrict');
+});
+
+it('passes drop-tables off through to the psql loader', function () use ($pgDump): void {
+    config([
+        'db-snapshot-sync.sync.allowed_environments' => ['testing'],
+        'db-snapshot-sync.load.drop-tables' => false,
+    ]);
+    Storage::fake('snapshots');
+    Http::fake(['source.test/*' => Http::response($pgDump)]);
+    $load = fakePsqlLoad();
+
+    $this->artisan('snapshot:sync')->assertSuccessful();
+
+    expect($load['drop-tables'])->toBeFalse();
+});
+
+it('exits non-zero and keeps the download when the psql load fails', function () use ($pgDump): void {
+    config(['db-snapshot-sync.sync.allowed_environments' => ['testing']]);
+    $disk = Storage::fake('snapshots');
+    Http::fake(['source.test/*' => Http::response($pgDump)]);
+    fakePsqlLoad(new RuntimeException('psql failed to load; the load was rolled back.'));
+
+    expect(fn () => $this->artisan('snapshot:sync')->run())
+        ->toThrow(RuntimeException::class, 'psql failed to load');
+
+    expect($disk->files())->toHaveCount(1);
+    expect(DB::getDefaultConnection())->toBe('pgsql');
 });
 
 it('refuses a MySQL dump bound for a pgsql connection without sanitizing or loading', function () use ($mysqlDump): void {

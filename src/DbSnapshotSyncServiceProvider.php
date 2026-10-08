@@ -9,6 +9,7 @@ use Override;
 use Phattarachai\DbSnapshotSyncLaravel\Console\InstallCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\SedCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\SyncCommand;
+use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
 
 class DbSnapshotSyncServiceProvider extends ServiceProvider
 {
@@ -16,6 +17,10 @@ class DbSnapshotSyncServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/db-snapshot-sync.php', 'db-snapshot-sync');
+
+        $this->app->bind(PsqlLoader::class, fn (): PsqlLoader => new PsqlLoader(
+            (string) config('db-snapshot-sync.psql', 'psql'),
+        ));
     }
 
     public function boot(): void

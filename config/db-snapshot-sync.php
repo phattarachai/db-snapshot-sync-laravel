@@ -126,10 +126,15 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | snapshot:load flags
+    | Load flags
     |--------------------------------------------------------------------------
-    | Passed through to spatie's snapshot:load. --stream is required for any
-    | non-trivial dump (avoids loading the whole file into memory).
+    | MySQL/MariaDB: passed through to spatie's snapshot:load. --stream is
+    | required for any non-trivial dump (avoids loading the whole file into
+    | memory).
+    |
+    | PostgreSQL: loaded with psql (see `psql` below), not snapshot:load —
+    | spatie's PHP statement splitter mis-reads backslashes in pg_dump string
+    | literals and silently drops everything after one. Only drop-tables applies.
     */
 
     'load' => [
@@ -137,6 +142,16 @@ return [
         'force' => true,
         'stream' => true,
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | psql binary
+    |--------------------------------------------------------------------------
+    | The client a PostgreSQL snapshot is loaded with. Any error, or a dump cut
+    | short, exits non-zero and rolls the load back.
+    */
+
+    'psql' => env('DB_SNAPSHOT_SYNC_PSQL', 'psql'),
 
     /*
     |--------------------------------------------------------------------------

@@ -15,6 +15,7 @@ use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\Sanitizer;
 use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\SanitizerFactory;
 use Phattarachai\DbSnapshotSyncLaravel\Support\CaBundle;
 use Phattarachai\DbSnapshotSyncLaravel\Support\DumpEngine;
+use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
 use RuntimeException;
 
 class SyncCommand extends Command
@@ -95,7 +96,7 @@ class SyncCommand extends Command
         $loadable = $this->sanitize($sanitizer, $downloaded);
 
         if (! $this->option('no-load')) {
-            $this->loadIntoLocalDb($loadable, $connection);
+            $this->loadIntoLocalDb($loadable, $connection, $driver);
         }
 
         $this->cleanUpRaw($downloaded, $loadable);
@@ -217,12 +218,43 @@ class SyncCommand extends Command
         return $sanitizer->sanitize($disk, $downloaded);
     }
 
-    private function loadIntoLocalDb(string $name, string $connection): void
+    private function loadIntoLocalDb(string $name, string $connection, string $driver): void
     {
         $this->info("Loading into local DB [{$connection}]...");
 
         $flags = (array) config('db-snapshot-sync.load', []);
+        $default = DB::getDefaultConnection();
 
+        try {
+            $driver === 'pgsql'
+                ? $this->loadWithPsql($name, $connection, (bool) ($flags['drop-tables'] ?? true))
+                : $this->loadWithSnapshotLoad($name, $connection, $flags);
+        } finally {
+            // spatie's Snapshot::load() makes the target the default connection and
+            // never switches back, and a pg_dump leaves search_path = '' on the pooled
+            // connection. Restore both so a caller running snapshot:sync in-process
+            // (e.g. from another command) keeps its own default and a clean session.
+            DB::setDefaultConnection($default);
+            DB::purge($connection);
+        }
+    }
+
+    /**
+     * pg_dump output goes through psql, not spatie's PHP statement splitter, which
+     * mis-reads a backslash before a quote and silently drops the rest of the dump.
+     */
+    private function loadWithPsql(string $name, string $connection, bool $dropTables): void
+    {
+        $path = Storage::disk((string) config('db-snapshot-sync.disk'))->path($name);
+
+        app(PsqlLoader::class)->load($path, $connection, $dropTables);
+    }
+
+    /**
+     * @param  array<array-key, mixed>  $flags
+     */
+    private function loadWithSnapshotLoad(string $name, string $connection, array $flags): void
+    {
         $arguments = [
             'name' => preg_replace('/\.sql(\.gz)?$/', '', $name),
             '--connection' => $connection,
@@ -234,20 +266,7 @@ class SyncCommand extends Command
             }
         }
 
-        $default = DB::getDefaultConnection();
-
-        try {
-            $status = $this->call('snapshot:load', $arguments);
-        } finally {
-            // spatie's Snapshot::load() makes the target the default connection and
-            // never switches back, and a pg_dump leaves search_path = '' on the pooled
-            // connection. Restore both so a caller running snapshot:sync in-process
-            // (e.g. from another command) keeps its own default and a clean session.
-            DB::setDefaultConnection($default);
-            DB::purge($connection);
-        }
-
-        if ($status !== self::SUCCESS) {
+        if ($this->call('snapshot:load', $arguments) !== self::SUCCESS) {
             throw new RuntimeException('snapshot:load failed.');
         }
     }
