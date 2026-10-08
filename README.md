@@ -15,7 +15,8 @@ snapshot:sync --fresh
   → trigger a fresh dump on production (internal API)
   → download the .sql.gz
   → snapshot:sed  (strip directives that reject on a local client)
-  → snapshot:load --drop-tables --force --stream
+  → load: psql, in one transaction (PostgreSQL)
+          snapshot:load --drop-tables --force --stream (MySQL/MariaDB)
 ```
 
 Supports **PostgreSQL** and **MySQL/MariaDB**.
@@ -127,9 +128,29 @@ Set `DB_SNAPSHOT_SYNC_API=true` (and the shared `INTERNAL_API_TOKEN`) on product
 `EnsureInternalToken` 404s the whole group in `local` and checks a `hash_equals` bearer token
 otherwise; the routes carry `throttle:5,1`. The consumer sends the matching token from its `.env`.
 
+## How a PostgreSQL snapshot is loaded
+
+A pgsql target is loaded with **`psql`**, not spatie's `snapshot:load`. spatie splits the dump into
+statements in PHP and treats a backslash inside a `'…'` literal as an escape, but `pg_dump` writes
+with `standard_conforming_strings = on`, where a backslash is literal. A value such as `I\'ve`
+(dumped as `'I\''ve'`) throws its quote tracking off. Everything after it folds into one trailing
+statement that never ends in `;`, and spatie discards that without an error. The load then reports
+success with every later table empty.
+
+`psql` is pg_dump's own parser. `snapshot:sync` streams the dump into it with `ON_ERROR_STOP=1`,
+inside one transaction that holds both the table drop and the restore. `COMMIT` is sent only after
+the whole file has been read and it ends with pg_dump's `-- PostgreSQL database dump complete`
+trailer. A failed statement, a read error or a truncated download therefore exits non-zero and rolls
+back to the database as it was. Connection settings reach psql as `PG*` environment variables, so the
+password never appears in the process list.
+
+This needs the PostgreSQL client on the machine running the sync. Set `DB_SNAPSHOT_SYNC_PSQL` when
+`psql` is not on `PATH` (e.g. `/opt/homebrew/opt/libpq/bin/psql`). Of the `load` flags, only
+`drop-tables` applies to a pgsql load. MySQL/MariaDB still goes through `snapshot:load`.
+
 ## Configuration
 
-`config/db-snapshot-sync.php` covers the disk name, token, source URLs, `snapshot:load` flags,
+`config/db-snapshot-sync.php` covers the disk name, token, source URLs, load flags, the `psql` binary,
 the per-driver sanitizer rules (add a prefix/`sed` expression when a new dump quirk appears), and
 the API's reject-list (never serve a schema-only baseline or a `.sanitized.` intermediate).
 
