@@ -371,8 +371,10 @@ late. In that case chain the backup onto the create (`->then(fn () => Artisan::c
 
 ### Alerting
 
-`snapshot:backup-check` reads the newest object under `{path}/daily/` on each target and dispatches
-one event per target. Both implement `SnapshotBackupChecked`, so listen on that interface to get
+`snapshot:backup-check` reads the newest snapshot under `{path}/daily/` on each target and dispatches
+one event per target. "Newest" here, in `snapshot:drill` and in the weekly pick goes by when the
+snapshot was taken: the `Y-m-d_H-i-s` stamp spatie puts in the name (read in `app.timezone`), or the
+file's modified time when the name has none. A target's modified time is only the upload time. Both implement `SnapshotBackupChecked`, so listen on that interface to get
 both. (A listener on their abstract parent class never fires: Laravel matches an event's interfaces,
 not its parent classes.)
 

@@ -102,7 +102,8 @@ final class OffsiteBackup
     {
         $since = Carbon::now()->subDays($config->dailyDays);
 
-        foreach ($snapshots->reject(fn (SnapshotFile $file): bool => $file->isOlderThan($since)) as $file) {
+        // Oldest first, so a catch-up batch lands on the target in the order it was taken.
+        foreach ($snapshots->reject(fn (SnapshotFile $file): bool => $file->isOlderThan($since))->reverse() as $file) {
             $to = "{$config->dailyDir()}/{$file->name()}";
 
             if ($this->holds($target, $to, $file->size)) {

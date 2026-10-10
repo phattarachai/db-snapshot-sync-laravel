@@ -6,6 +6,7 @@ use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
+use Phattarachai\DbSnapshotSyncLaravel\Backup\OffsiteBackup;
 
 /**
  * Write a snapshot onto a fake disk and date it.
@@ -249,6 +250,21 @@ it('creates no weekly folder when weekly copies are off', function (): void {
 
     expect($this->spaces->files('db/daily'))->toBe(['db/daily/nightly-0304.sql.gz']);
     expect($this->spaces->directoryExists('db/weekly'))->toBeFalse();
+});
+
+it('uploads a catch-up batch oldest first and picks the week\'s newest by when it was taken', function (): void {
+    putSnapshot($this->local, '2026-03-04_03-30-00.sql.gz', Carbon::parse('2026-03-04 03:30:00'));
+    putSnapshot($this->local, '2026-03-02_17-34-44.sql.gz', Carbon::parse('2026-03-02 17:34:44'));
+    putSnapshot($this->local, '2026-03-03_03-30-00.sql.gz', Carbon::parse('2026-03-03 03:30:00'));
+
+    [$report] = (new OffsiteBackup)->run();
+
+    expect($report->uploaded)->toBe([
+        'db/daily/2026-03-02_17-34-44.sql.gz',
+        'db/daily/2026-03-03_03-30-00.sql.gz',
+        'db/daily/2026-03-04_03-30-00.sql.gz',
+    ]);
+    expect($report->weekly)->toBe(['db/weekly/2026-W10_2026-03-04_03-30-00.sql.gz']);
 });
 
 it('fails when no target disk is configured', function (): void {
