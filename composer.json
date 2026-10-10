@@ -1,6 +1,6 @@
 {
     "name": "phattarachai/db-snapshot-sync-laravel",
-    "description": "Rebuild a Laravel dev database from production in one command — driver-aware dump sanitizer, sync orchestrator, and a token-protected internal snapshot API. Extends spatie/laravel-db-snapshots.",
+    "description": "Rebuild a Laravel dev database from production in one command — driver-aware dump sanitizer, sync orchestrator, token-protected internal snapshot API — plus off-site backup with age-based retention and restore drills. Extends spatie/laravel-db-snapshots.",
     "type": "library",
     "license": "MIT",
     "keywords": [
@@ -9,7 +9,9 @@
         "snapshot",
         "postgres",
         "mysql",
-        "devops"
+        "devops",
+        "backup",
+        "retention"
     ],
     "authors": [
         {

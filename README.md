@@ -21,6 +21,11 @@ snapshot:sync --fresh
 
 Supports **PostgreSQL** and **MySQL/MariaDB**.
 
+On the source side it also keeps those snapshots **off-site**: `snapshot:backup` copies them to any
+Flysystem disk (S3/Spaces, Google Drive, a NAS over sftp), retention goes by age instead of file
+count, `snapshot:backup-check` raises an event when a copy goes stale, and `snapshot:drill` proves the
+off-site copy actually restores. See [Off-site backup & retention](#off-site-backup--retention).
+
 ## Why
 
 `spatie/laravel-db-snapshots` dumps and loads, but a dump made by a production `pg_dump` /
@@ -50,6 +55,10 @@ source-side snippets you paste into `config/db-snapshots.php`, `config/filesyste
 - **`snapshot:sync {--fresh} {--source=production} {--connection=} {--no-load} {--keep-raw}`** —
   pull the latest snapshot from a source, sanitize, and load into the local DB. Runs only in the
   environments listed in `db-snapshot-sync.sync.allowed_environments`.
+
+- **`snapshot:backup`**, **`snapshot:prune {--days=} {--dry-run}`**, **`snapshot:backup-check`**,
+  **`snapshot:drill {--disk=} {--connection=}`**: off-site backup, local retention, staleness
+  check and restore drill. See [Off-site backup & retention](#off-site-backup--retention).
 
 Start with a dry run once the source URLs are set:
 
@@ -186,6 +195,200 @@ download fails with `cURL error 60: unable to get local issuer certificate`. Poi
 `DB_SNAPSHOT_SYNC_CA_BUNDLE` (config `http.ca_bundle`) at the missing intermediate's PEM (absolute,
 or relative to the app base path) and the client appends it to the system trust store for the
 download only — the chain still fully verifies. Leave it unset for ordinary sources.
+
+## Off-site backup & retention
+
+spatie's `snapshot:create` writes to one disk, usually on the same machine as the database, and
+`snapshot:cleanup --keep=N` deletes by **file count**, so a burst of deploy restore points shortens
+the window. These four commands put a copy somewhere else and age both sides by **time**.
+
+| Command | Job | What it does |
+|---|---|---|
+| `snapshot:backup` | `BackupSnapshots` | uploads local snapshots to every target disk, keeps `daily/` + `weekly/`, prunes the targets |
+| `snapshot:prune {--days=} {--dry-run}` | `PruneSnapshots` | deletes local snapshots older than `local_days` (replaces `snapshot:cleanup --keep`) |
+| `snapshot:backup-check` | `CheckSnapshotBackup` | dispatches `SnapshotBackupStale` / `SnapshotBackupHealthy` per target |
+| `snapshot:drill {--disk=} {--connection=}` | `RunRestoreDrill` | restores the newest off-site copy into a scratch database and compares row counts |
+
+Every command exits non-zero on failure (a target failed, a copy is stale, a drill failed), so a
+scheduler that alerts on failed commands covers it. The jobs (`Phattarachai\DbSnapshotSyncLaravel\Jobs\…`)
+run the same code; they go on `DB_SNAPSHOT_SYNC_BACKUP_QUEUE` when set, never retry, and
+`BackupSnapshots` / `RunRestoreDrill` allow an hour, so put them on a queue whose worker
+`--timeout` covers that instead of riding `default`.
+
+### Configure
+
+```php
+// config/db-snapshot-sync.php
+'backup' => [
+    'disks' => ['spaces'],          // any disks from config/filesystems.php, one or more
+    'path' => 'db',                 // prefix on each target; let the disk's root carry the app/env
+    'local_days' => 14,             // snapshot:prune deletes local snapshots older than this
+    'keep_min' => 3,                // ...but never below the newest 3 (local, and each target's daily/)
+    'daily_days' => 14,             // {path}/daily/ keeps every snapshot this many days
+    'weekly_weeks' => 8,            // {path}/weekly/ keeps the newest snapshot of each ISO week
+    'stale_after_hours' => 26,      // snapshot:backup-check threshold
+    'protect' => ['testing'],       // snapshot names never pruned and never uploaded
+    'queue' => env('DB_SNAPSHOT_SYNC_BACKUP_QUEUE'),
+],
+```
+
+On each target, `snapshot:backup`:
+
+- **uploads** every local `.sql` / `.sql.gz` from the last `daily_days` that is not yet under
+  `{path}/daily/` with the same size. A night the box missed goes up on the next run, and a short
+  copy left by an interrupted upload is replaced. Protected snapshots and anything in `api.reject`
+  (`.sanitized.` intermediates) stay local. A file modified in the last 60 seconds is left for the
+  next run, because spatie may still be copying it onto the disk.
+- **copies** the newest snapshot of each of the last `weekly_weeks` ISO weeks to
+  `{path}/weekly/{YYYY-Www}_{name}`, and replaces the current week's copy when a newer snapshot
+  lands. That copy is made on the target itself when the daily copy is there (server-side on
+  S3/Spaces), so nothing is uploaded twice.
+- **prunes** `daily/` by the copy's age on the target and `weekly/` by the week in its name, never
+  below `keep_min` on either.
+
+Files are streamed (`readStream` / `writeStream`), never read into memory, and every object is
+written with **private** visibility explicitly, whatever the disk's own default. After each
+upload the target size is compared with the local one; a mismatch deletes the copy and fails that
+target. One target failing does not stop the others.
+
+### Target disks
+
+The package needs no Flysystem adapter itself. Install the one your disk uses. Setting
+`'throw' => true` makes a failure carry the adapter's own error message.
+
+**DigitalOcean Spaces / S3** (`composer require league/flysystem-aws-s3-v3`):
+
+```php
+'spaces' => [
+    'driver' => 's3',
+    'key' => env('DO_SPACES_KEY'),
+    'secret' => env('DO_SPACES_SECRET'),
+    'region' => env('DO_SPACES_REGION'),
+    'bucket' => env('DO_SPACES_BUCKET'),
+    'endpoint' => env('DO_SPACES_ENDPOINT'),
+    'root' => env('DO_SPACES_ROOT'),          // e.g. myapp/production
+    'throw' => true,
+],
+```
+
+Private visibility is sent as an object ACL. That works on Spaces and on S3 buckets with ACLs
+enabled. An AWS bucket set to "bucket owner enforced" (ACLs disabled) rejects it.
+
+**Google Drive** (e.g. `composer require masbug/flysystem-google-drive-ext`). Register a driver in a
+service provider, as that adapter's README shows:
+
+```php
+Storage::extend('google', function ($app, array $config) {
+    $client = new \Google\Client;
+    $client->setClientId($config['clientId']);
+    $client->setClientSecret($config['clientSecret']);
+    $client->refreshToken($config['refreshToken']);
+
+    $adapter = new \Masbug\Flysystem\GoogleDriveAdapter(new \Google\Service\Drive($client), $config['folder']);
+
+    return new \Illuminate\Filesystem\FilesystemAdapter(new \League\Flysystem\Filesystem($adapter), $adapter, $config);
+});
+```
+
+```php
+'gdrive' => [
+    'driver' => 'google',
+    'clientId' => env('GOOGLE_DRIVE_CLIENT_ID'),
+    'clientSecret' => env('GOOGLE_DRIVE_CLIENT_SECRET'),
+    'refreshToken' => env('GOOGLE_DRIVE_REFRESH_TOKEN'),
+    'folder' => env('GOOGLE_DRIVE_FOLDER'),   // e.g. backups/myapp-production
+    'throw' => true,
+],
+```
+
+**NAS over sftp** (`composer require league/flysystem-sftp-v3`):
+
+```php
+'nas' => [
+    'driver' => 'sftp',
+    'host' => env('NAS_SFTP_HOST'),
+    'port' => (int) env('NAS_SFTP_PORT', 22),
+    'username' => env('NAS_SFTP_USERNAME'),
+    'privateKey' => env('NAS_SFTP_PRIVATE_KEY_PATH'),
+    'root' => env('NAS_SFTP_ROOT'),           // e.g. /volume1/backups/myapp-production
+    'throw' => true,
+],
+```
+
+A mounted volume is a plain `'driver' => 'local'` disk with `'root'` on the mount.
+
+### Schedule
+
+```php
+// routes/console.php
+use Illuminate\Support\Facades\Schedule;
+
+Schedule::command('snapshot:create', ['--compress'])->dailyAt('04:00');
+Schedule::command('snapshot:backup')->dailyAt('04:03')->withoutOverlapping();
+Schedule::command('snapshot:prune')->dailyAt('04:05');
+Schedule::command('snapshot:backup-check')->hourly();
+
+// Optional: prove the off-site copy restores, e.g. monthly, off-peak.
+Schedule::command('snapshot:drill')->monthlyOn(1, '05:00');
+```
+
+`snapshot:prune` replaces `snapshot:cleanup --keep=N`. Drop the old line when you add it. If the dump
+takes longer than a couple of minutes, the 04:03 backup does not see it yet and it goes up a day
+late. In that case chain the backup onto the create (`->then(fn () => Artisan::call('snapshot:backup'))`).
+
+### Alerting
+
+`snapshot:backup-check` reads the newest object under `{path}/daily/` on each target and dispatches
+one event per target. Both extend `SnapshotBackupStatus`, so you can listen to that for both:
+
+| Event | When | Properties |
+|---|---|---|
+| `SnapshotBackupHealthy` | newest copy within `stale_after_hours` | `disk`, `newest`, `newestAt`, `ageSeconds`, `ageHours()`, `staleAfterHours` |
+| `SnapshotBackupStale` | older than that, no copy at all, or the target could not be read | the same, with `newest`/`ageSeconds` null when there is no copy, and `error` when unreadable |
+
+```php
+use Phattarachai\DbSnapshotSyncLaravel\Events\SnapshotBackupStale;
+
+Event::listen(SnapshotBackupStale::class, function (SnapshotBackupStale $event): void {
+    Log::critical('Off-site DB backup is stale', [
+        'disk' => $event->disk,
+        'newest' => $event->newest,
+        'age_hours' => $event->ageHours(),
+        'error' => $event->error,
+    ]);
+});
+```
+
+### Restore drill
+
+`snapshot:drill` downloads the newest daily copy **from a target disk** (`--disk`, default the first
+in `backup.disks`), so it proves the off-site copy and not the local one. It then:
+
+1. creates `<database>_restore_drill` on the live connection's server (`--connection`, default the
+   default connection), dropping a leftover from a killed run first;
+2. loads the copy into it, with psql in one transaction on PostgreSQL (see
+   [How a PostgreSQL snapshot is loaded](#how-a-postgresql-snapshot-is-loaded)) and spatie's
+   streamed loader on MySQL/MariaDB;
+3. compares exact per-table row counts with the live database and prints the elapsed time and the
+   tables that differ;
+4. drops the scratch database in a `finally`, and dispatches `SnapshotDrillCompleted` with the
+   `DrillResult`.
+
+The live database is only read (row counts). Every write goes to the scratch database, and the drill
+refuses to load if the scratch connection does not resolve to it. The data never leaves the box, so
+the drill is meant to run on production. Row counts are taken *now*, after the snapshot, so small
+deltas are normal. The drill **fails** when a live table is missing from the restore, or has rows live
+but restored empty (tables in `dump.exclude_table_data` excepted), or when the download, the engine
+check or the load fails.
+
+It needs:
+
+- **the privilege to create a database.** PostgreSQL: `ALTER ROLE <app_user> CREATEDB;`. MySQL:
+  `` GRANT ALL ON `<database>_restore_drill`.* TO '<app_user>'@'<host>'; ``. Extensions the dump
+  creates must be ones that user may create (trusted extensions, on PostgreSQL 13+).
+- **disk space** for a second copy of the database on the DB server, plus the compressed download
+  under `storage/app/db-snapshot-sync-drill/` (deleted afterwards).
+- **an off-peak slot.** `count(*)` on every live table is a full scan of each.
 
 ## Testing
 
