@@ -6,7 +6,11 @@ namespace Phattarachai\DbSnapshotSyncLaravel;
 
 use Illuminate\Support\ServiceProvider;
 use Override;
+use Phattarachai\DbSnapshotSyncLaravel\Console\BackupCheckCommand;
+use Phattarachai\DbSnapshotSyncLaravel\Console\BackupCommand;
+use Phattarachai\DbSnapshotSyncLaravel\Console\DrillCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\InstallCommand;
+use Phattarachai\DbSnapshotSyncLaravel\Console\PruneCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\SedCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\SyncCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
@@ -35,7 +39,11 @@ class DbSnapshotSyncServiceProvider extends ServiceProvider
 
         if ($this->app->runningInConsole()) {
             $this->commands([
+                BackupCheckCommand::class,
+                BackupCommand::class,
+                DrillCommand::class,
                 InstallCommand::class,
+                PruneCommand::class,
                 SedCommand::class,
                 SyncCommand::class,
             ]);

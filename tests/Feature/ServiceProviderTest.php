@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Route;
 
 it('registers the package commands', function (string $command): void {
     expect(array_keys($this->app[Kernel::class]->all()))->toContain($command);
-})->with(['snapshot:sed', 'snapshot:sync', 'db-snapshot-sync:install']);
+})->with(['snapshot:sed', 'snapshot:sync', 'db-snapshot-sync:install', 'snapshot:backup', 'snapshot:prune', 'snapshot:backup-check', 'snapshot:drill']);
 
 it('merges the package config', function (): void {
     expect(config('db-snapshot-sync.sanitizer.pgsql.drop_prefixes'))->toContain('\\restrict');

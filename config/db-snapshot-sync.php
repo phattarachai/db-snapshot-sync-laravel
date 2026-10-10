@@ -211,4 +211,42 @@ return [
         // or a MySQL .sanitized. intermediate). Match by substring, by name.
         'reject' => ['.sanitized.'],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Off-site backup & retention (source side)
+    |--------------------------------------------------------------------------
+    | `snapshot:backup` copies the local snapshots to every disk in `disks`,
+    | `snapshot:prune` ages them out locally, `snapshot:backup-check` alerts
+    | when a target's newest copy is stale, and `snapshot:drill` restores the
+    | newest off-site copy into a scratch database to prove it loads.
+    |
+    | `disks` names any Flysystem disk from config/filesystems.php: S3 or
+    | DigitalOcean Spaces, Google Drive, a NAS over sftp, a local mount. The
+    | package needs no adapter of its own; install the one your disk uses.
+    | Every object is written with private visibility, whatever the disk's
+    | default.
+    |
+    | On each target, `{path}/daily/` holds every snapshot for `daily_days`
+    | and `{path}/weekly/` the newest snapshot of each ISO week for
+    | `weekly_weeks`. Neither the local disk nor a target's daily copies are
+    | ever pruned below the newest `keep_min`, so a run of failed nightlies
+    | cannot empty them. Snapshots named in `protect` (e.g. a committed schema
+    | baseline) are never pruned and never uploaded; neither is anything the
+    | API rejects (`api.reject`).
+    */
+
+    'backup' => [
+        'disks' => [],
+        'path' => 'db',
+        'local_days' => 14,
+        'keep_min' => 3,
+        'daily_days' => 14,
+        'weekly_weeks' => 8,
+        'stale_after_hours' => 26,
+        'protect' => ['testing'],
+        // Queue the package's jobs (BackupSnapshots, RunRestoreDrill, …) go on
+        // when dispatched; null rides the connection's default queue.
+        'queue' => env('DB_SNAPSHOT_SYNC_BACKUP_QUEUE'),
+    ],
 ];
