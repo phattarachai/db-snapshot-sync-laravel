@@ -16,7 +16,7 @@ This file records anything released before that automation landed.
   ISO week under `{path}/weekly/`, always with private visibility, size-verified, prunes the targets
   by age), `snapshot:prune` (local retention by age with `keep_min` and `protect`, replacing
   `snapshot:cleanup --keep`), `snapshot:backup-check` (dispatches `SnapshotBackupStale` /
-  `SnapshotBackupHealthy`) and `snapshot:drill` (restores the newest off-site copy into
+  `SnapshotBackupHealthy`, both implementing `SnapshotBackupChecked`) and `snapshot:drill` (restores the newest off-site copy into
   `<database>_restore_drill`, diffs row counts with the live database, drops it, and dispatches
   `SnapshotDrillCompleted`). Each has a queued job: `BackupSnapshots`, `PruneSnapshots`,
   `CheckSnapshotBackup`, `RunRestoreDrill`.

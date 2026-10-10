@@ -9,10 +9,11 @@ use Illuminate\Support\Carbon;
 
 /**
  * The state of one target disk's newest daily copy, as `snapshot:backup-check`
- * found it. Listen for SnapshotBackupStale / SnapshotBackupHealthy (or this base
- * class for both) and map it to your own alerting.
+ * found it. Listen for SnapshotBackupStale / SnapshotBackupHealthy, or for the
+ * SnapshotBackupChecked interface to get both (a listener on this abstract class
+ * never fires: Laravel matches interfaces, not parent classes).
  */
-abstract class SnapshotBackupStatus
+abstract class SnapshotBackupStatus implements SnapshotBackupChecked
 {
     use Dispatchable;
 

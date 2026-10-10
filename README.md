@@ -339,7 +339,9 @@ late. In that case chain the backup onto the create (`->then(fn () => Artisan::c
 ### Alerting
 
 `snapshot:backup-check` reads the newest object under `{path}/daily/` on each target and dispatches
-one event per target. Both extend `SnapshotBackupStatus`, so you can listen to that for both:
+one event per target. Both implement `SnapshotBackupChecked`, so listen on that interface to get
+both. (A listener on their abstract parent class never fires: Laravel matches an event's interfaces,
+not its parent classes.)
 
 | Event | When | Properties |
 |---|---|---|
