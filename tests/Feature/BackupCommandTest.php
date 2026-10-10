@@ -107,6 +107,7 @@ it('deletes a copy whose size does not match after upload and fails the target',
 
     $short = Mockery::mock(Filesystem::class);
     $short->shouldReceive('exists')->andReturnFalse();
+    $short->shouldReceive('makeDirectory')->andReturnTrue();
     $short->shouldReceive('writeStream')->once()->with('db/daily/nightly.sql.gz', Mockery::type('resource'), ['visibility' => 'private'])->andReturnTrue();
     $short->shouldReceive('size')->with('db/daily/nightly.sql.gz')->andReturn(3);
     $short->shouldReceive('delete')->once()->with('db/daily/nightly.sql.gz')->andReturnTrue();
@@ -220,6 +221,34 @@ it('prunes weekly copies by the week in their name', function (): void {
         'db/weekly/2026-W03_edge.sql.gz',
         'db/weekly/hand-placed.sql.gz',
     ]);
+});
+
+it('backs up to a fresh Google Drive-like target that throws on listing a missing folder', function (): void {
+    $this->spaces = driveLikeDisk('spaces');
+    putSnapshot($this->local, 'nightly-0304.sql.gz', now()->subHours(2), 'tonight');
+    putSnapshot($this->local, 'nightly-0303.sql.gz', now()->subDay(), 'last night');
+
+    $this->artisan('snapshot:backup')
+        ->expectsOutputToContain('[spaces] ok: 2 uploaded, 1 weekly, 0 pruned.')
+        ->assertSuccessful();
+
+    expect($this->spaces->files('db/daily'))->toEqualCanonicalizing(['db/daily/nightly-0304.sql.gz', 'db/daily/nightly-0303.sql.gz']);
+    expect($this->spaces->files('db/weekly'))->toBe(['db/weekly/2026-W10_nightly-0304.sql.gz']);
+
+    $this->artisan('snapshot:backup')
+        ->expectsOutputToContain('[spaces] ok: 0 uploaded, 0 weekly, 0 pruned.')
+        ->assertSuccessful();
+});
+
+it('creates no weekly folder when weekly copies are off', function (): void {
+    config(['db-snapshot-sync.backup.weekly_weeks' => 0]);
+    $this->spaces = driveLikeDisk('spaces');
+    putSnapshot($this->local, 'nightly-0304.sql.gz', now()->subHours(2));
+
+    $this->artisan('snapshot:backup')->assertSuccessful();
+
+    expect($this->spaces->files('db/daily'))->toBe(['db/daily/nightly-0304.sql.gz']);
+    expect($this->spaces->directoryExists('db/weekly'))->toBeFalse();
 });
 
 it('fails when no target disk is configured', function (): void {
