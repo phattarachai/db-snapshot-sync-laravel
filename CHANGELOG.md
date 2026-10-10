@@ -7,6 +7,16 @@ Release notes are drafted automatically from merged pull requests and published 
 
 This file records anything released before that automation landed.
 
+## v1.2.2
+
+### Fixed
+
+- The newest snapshot (`snapshot:backup-check`, `snapshot:drill`, the weekly copy, `keep_min`) is
+  chosen by when it was taken (the `Y-m-d_H-i-s` stamp in spatie's name, else the modified time),
+  not by the target's modified time, which is the upload time. A first catch-up run had uploaded
+  the oldest snapshot last, so the check reported it as newest and the drill restored it.
+  `snapshot:backup` also uploads a catch-up batch oldest first.
+
 ## v1.2.1
 
 ### Fixed

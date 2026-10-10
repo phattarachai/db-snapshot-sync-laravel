@@ -13,7 +13,7 @@ use RuntimeException;
 use Throwable;
 
 /**
- * Reads the newest object under `{path}/daily/` on each target and dispatches
+ * Reads the newest snapshot (by SnapshotFile::takenAt()) under `{path}/daily/` on each target and dispatches
  * SnapshotBackupHealthy or SnapshotBackupStale for it. A target that holds no
  * copy (no daily/ folder yet included), or cannot be read at all, is stale.
  */
@@ -51,8 +51,8 @@ final class BackupHealth
             return new SnapshotBackupStale($disk, null, null, null, $config->staleAfterHours);
         }
 
-        $at = Carbon::createFromTimestamp($newest->lastModified, (string) config('app.timezone', 'UTC'));
-        $age = max(0, Carbon::now()->getTimestamp() - $newest->lastModified);
+        $at = Carbon::createFromTimestamp($newest->takenAt(), (string) config('app.timezone', 'UTC'));
+        $age = max(0, Carbon::now()->getTimestamp() - $newest->takenAt());
         $class = $age > $config->staleAfterHours * 3600 ? SnapshotBackupStale::class : SnapshotBackupHealthy::class;
 
         return new $class($disk, $newest->path, $at, $age, $config->staleAfterHours);

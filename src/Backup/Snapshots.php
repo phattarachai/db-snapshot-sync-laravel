@@ -11,7 +11,8 @@ use Throwable;
 final class Snapshots
 {
     /**
-     * Every .sql / .sql.gz directly under $directory on $disk, newest first.
+     * Every .sql / .sql.gz directly under $directory on $disk, newest taken first
+     * (see SnapshotFile::takenAt()), the later upload first on a tie.
      *
      * @return Collection<int, SnapshotFile>
      */
@@ -20,7 +21,7 @@ final class Snapshots
         return collect(self::files($disk, $directory))
             ->filter(SnapshotFile::isSnapshot(...))
             ->map(fn (string $path): SnapshotFile => new SnapshotFile($path, $disk->size($path), $disk->lastModified($path)))
-            ->sortByDesc(fn (SnapshotFile $file): int => $file->lastModified)
+            ->sort(fn (SnapshotFile $a, SnapshotFile $b): int => [$b->takenAt(), $b->lastModified] <=> [$a->takenAt(), $a->lastModified])
             ->values();
     }
 

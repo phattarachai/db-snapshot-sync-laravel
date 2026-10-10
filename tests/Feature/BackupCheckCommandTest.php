@@ -48,6 +48,21 @@ it('reports each target healthy with its newest daily copy and age', function ()
     Event::assertNotDispatched(SnapshotBackupStale::class);
 });
 
+it('takes the newest copy by when it was taken, not by when it was uploaded', function (): void {
+    // A first catch-up run uploaded newest first, so the oldest snapshot landed last.
+    landed($this->spaces, 'db/daily/2026-03-04_03-30-00.sql.gz', now()->subHours(2));
+    landed($this->spaces, 'db/daily/2026-03-02_17-34-44.sql.gz', now()->subHours(2)->addSeconds(30));
+    landed($this->nas, 'db/daily/2026-03-04_03-30-00.sql.gz', now()->subHour());
+
+    $this->artisan('snapshot:backup-check')
+        ->expectsOutputToContain('OK [spaces] newest db/daily/2026-03-04_03-30-00.sql.gz, 6.5h old')
+        ->assertSuccessful();
+
+    Event::assertDispatched(SnapshotBackupHealthy::class, fn (SnapshotBackupHealthy $e): bool => $e->disk === 'spaces'
+        && $e->newest === 'db/daily/2026-03-04_03-30-00.sql.gz'
+        && $e->ageSeconds === (int) (6.5 * 3600));
+});
+
 it('reports a target stale past stale_after_hours and exits non-zero', function (): void {
     landed($this->spaces, 'db/daily/fresh.sql.gz', now()->subHours(2));
     landed($this->nas, 'db/daily/old.sql.gz', now()->subHours(26)->subSecond());
