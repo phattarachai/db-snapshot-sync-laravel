@@ -78,6 +78,12 @@ final class OffsiteBackup
         try {
             $target = Storage::disk($disk);
 
+            $this->ensureDirectory($target, $config->dailyDir());
+
+            if ($config->weeklyWeeks > 0) {
+                $this->ensureDirectory($target, $config->weeklyDir());
+            }
+
             $this->uploadDaily($local, $target, $snapshots, $config, $report, $note);
             $this->copyWeekly($local, $target, $snapshots, $config, $report, $note);
             $this->prune($target, $config, $report, $note);
@@ -120,7 +126,7 @@ final class OffsiteBackup
         }
 
         $firstWeek = self::firstKeptWeek($config->weeklyWeeks);
-        $existing = $target->files($config->weeklyDir());
+        $existing = Snapshots::files($target, $config->weeklyDir());
 
         // $snapshots is newest first, so the first of each week is its newest.
         $newestPerWeek = $snapshots
@@ -173,7 +179,7 @@ final class OffsiteBackup
 
         $firstWeek = self::firstKeptWeek(max(1, $config->weeklyWeeks));
 
-        $weekly = collect($target->files($config->weeklyDir()))
+        $weekly = collect(Snapshots::files($target, $config->weeklyDir()))
             ->filter(fn (string $path): bool => SnapshotFile::isSnapshot($path) && self::weekOf($path) !== null)
             ->sortByDesc(fn (string $path): string => (string) self::weekOf($path))
             ->values()
@@ -184,6 +190,22 @@ final class OffsiteBackup
             $target->delete($path);
             $report->pruned[] = $path;
             $note("[{$report->disk}] pruned {$path}");
+        }
+    }
+
+    /**
+     * Google Drive throws on listing a folder that does not exist yet, so a fresh
+     * target gets its folders up front (Snapshots::files() covers one Drive's
+     * search does not see yet). Checked first, so S3 gets no folder marker object.
+     */
+    private function ensureDirectory(Filesystem $target, string $directory): void
+    {
+        if ($target->exists($directory)) {
+            return;
+        }
+
+        if (! $target->makeDirectory($directory)) {
+            throw new RuntimeException("Could not create {$directory} on the target.");
         }
     }
 

@@ -73,6 +73,17 @@ it('reports an empty target stale', function (): void {
     Event::assertDispatched(SnapshotBackupStale::class, fn (SnapshotBackupStale $e): bool => $e->disk === 'nas' && $e->newest === null && $e->ageSeconds === null);
 });
 
+it('reports a fresh Google Drive-like target with no daily folder as holding no copy, not unreadable', function (): void {
+    landed($this->spaces, 'db/daily/fresh.sql.gz', now()->subHour());
+    driveLikeDisk('nas');
+
+    $this->artisan('snapshot:backup-check')
+        ->expectsOutputToContain('STALE [nas] holds no daily copy')
+        ->assertFailed();
+
+    Event::assertDispatched(SnapshotBackupStale::class, fn (SnapshotBackupStale $e): bool => $e->disk === 'nas' && $e->newest === null && $e->error === null);
+});
+
 it('reports an unreachable target stale with the reason', function (): void {
     landed($this->spaces, 'db/daily/fresh.sql.gz', now()->subHour());
 

@@ -15,7 +15,7 @@ use Throwable;
 /**
  * Reads the newest object under `{path}/daily/` on each target and dispatches
  * SnapshotBackupHealthy or SnapshotBackupStale for it. A target that holds no
- * copy, or cannot be read at all, is stale.
+ * copy (no daily/ folder yet included), or cannot be read at all, is stale.
  */
 final class BackupHealth
 {

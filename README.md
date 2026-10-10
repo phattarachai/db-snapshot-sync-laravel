@@ -274,32 +274,65 @@ The package needs no Flysystem adapter itself. Install the one your disk uses. S
 Private visibility is sent as an object ACL. That works on Spaces and on S3 buckets with ACLs
 enabled. An AWS bucket set to "bucket owner enforced" (ACLs disabled) rejects it.
 
-**Google Drive** (e.g. `composer require masbug/flysystem-google-drive-ext`). Register a driver in a
-service provider, as that adapter's README shows:
+**Google Drive** (`composer require masbug/flysystem-google-drive-ext`). Register a driver in a
+service provider. For an unattended server, use a **service account** writing into a **Shared
+Drive**: a service account has no My Drive storage quota, so uploads into a plain folder fail, and
+`teamDriveId` is required. Add the service account's email to the Shared Drive as a **Content
+manager**.
 
 ```php
-Storage::extend('google', function ($app, array $config) {
-    $client = new \Google\Client;
-    $client->setClientId($config['clientId']);
-    $client->setClientSecret($config['clientSecret']);
-    $client->refreshToken($config['refreshToken']);
+use Google\Client;
+use Google\Service\Drive;
+use Illuminate\Filesystem\FilesystemAdapter;
+use League\Flysystem\Filesystem;
+use Masbug\Flysystem\GoogleDriveAdapter;
 
-    $adapter = new \Masbug\Flysystem\GoogleDriveAdapter(new \Google\Service\Drive($client), $config['folder']);
+Storage::extend('google-drive', function ($app, array $config): FilesystemAdapter {
+    $client = new Client;
+    $client->setAuthConfig($config['service_account']);   // path to the key JSON, or its decoded array
+    $client->addScope(Drive::DRIVE);
 
-    return new \Illuminate\Filesystem\FilesystemAdapter(new \League\Flysystem\Filesystem($adapter), $adapter, $config);
+    $adapter = new GoogleDriveAdapter(new Drive($client), $config['root'] ?? null, [
+        'teamDriveId' => $config['shared_drive_id'],
+    ]);
+
+    return new FilesystemAdapter(new Filesystem($adapter, $config), $adapter, $config);
 });
 ```
 
 ```php
 'gdrive' => [
-    'driver' => 'google',
-    'clientId' => env('GOOGLE_DRIVE_CLIENT_ID'),
-    'clientSecret' => env('GOOGLE_DRIVE_CLIENT_SECRET'),
-    'refreshToken' => env('GOOGLE_DRIVE_REFRESH_TOKEN'),
-    'folder' => env('GOOGLE_DRIVE_FOLDER'),   // e.g. backups/myapp-production
+    'driver' => 'google-drive',
+    'service_account' => env('GOOGLE_DRIVE_SERVICE_ACCOUNT'),   // e.g. /etc/myapp/gdrive-sa.json
+    'shared_drive_id' => env('GOOGLE_DRIVE_SHARED_DRIVE_ID'),
+    'root' => env('GOOGLE_DRIVE_ROOT'),                        // e.g. myapp, a folder in the Shared Drive
     'throw' => true,
 ],
 ```
+
+Keep the callback self-contained: Laravel rebinds an `extend` closure to the `FilesystemManager`,
+so `$this` inside it is the manager, not your provider, and calling a private method of the
+provider from it fails.
+
+`google/apiclient` pulls in every Google API's client (tens of thousands of files). Trim it to
+Drive in the app's `composer.json`, then run `composer update google/apiclient-services`:
+
+```json
+"scripts": {
+    "pre-autoload-dump": ["Google\\Task\\Composer::cleanup"]
+},
+"extra": {
+    "google/apiclient-services": ["Drive"]
+}
+```
+
+For a personal account without Workspace, an OAuth client with a refresh token works the same way
+(`setClientId`, `setClientSecret`, `refreshToken` instead of `setAuthConfig`), without `teamDriveId`.
+
+The Drive adapter throws when asked to list a folder that does not exist yet, and Drive's search can
+take a moment to see a folder just created. `snapshot:backup` creates `{path}/daily` and
+`{path}/weekly` on a fresh target itself, and every command reads a missing folder as empty, so a
+new project needs no folders made by hand.
 
 **NAS over sftp** (`composer require league/flysystem-sftp-v3`):
 

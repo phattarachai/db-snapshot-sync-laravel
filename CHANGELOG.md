@@ -7,6 +7,22 @@ Release notes are drafted automatically from merged pull requests and published 
 
 This file records anything released before that automation landed.
 
+## v1.2.1
+
+### Fixed
+
+- Off-site backup to Google Drive (`masbug/flysystem-google-drive-ext`) on a fresh target:
+  `snapshot:backup` creates `{path}/daily` and `{path}/weekly` before listing them, and every
+  command reads a folder that does not exist (or that Drive's search does not see yet) as empty, so
+  `snapshot:backup-check` reports a target with no `daily/` as holding no copy instead of
+  unreadable. An unreachable disk still fails as before.
+
+### Docs
+
+- README: Google Drive with a service account and a Shared Drive (`teamDriveId`, Content manager),
+  `setAuthConfig` + `Drive::DRIVE`, the `extend` closure being bound to the `FilesystemManager`,
+  and trimming `google/apiclient-services` to Drive.
+
 ## v1.2.0
 
 ### Added
