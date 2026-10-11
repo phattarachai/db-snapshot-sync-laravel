@@ -20,6 +20,35 @@ it('lists servable snapshots for a valid token', function (): void {
         ->assertJsonPath('snapshots.0.name', '2026-01-01.sql.gz');
 });
 
+it('lists and serves .sql.zst snapshots', function (): void {
+    $this->disk->put('older.sql.gz', gzencode('a', 9));
+    touch($this->disk->path('older.sql.gz'), time() - 60);
+    $this->disk->put('newer.sql.zst', 'zstd bytes');
+
+    $this->withToken('secret-token')
+        ->getJson('/internal/snapshots')
+        ->assertOk()
+        ->assertJsonPath('snapshots.0.name', 'newer.sql.zst');
+
+    $this->withToken('secret-token')
+        ->get('/internal/snapshots/latest')
+        ->assertOk()
+        ->assertDownload('newer.sql.zst');
+});
+
+it('returns the .sql.zst a fresh snapshot is written as when the format is zstd', function (): void {
+    config(['db-snapshot-sync.compression.format' => 'zstd']);
+
+    Artisan::command('snapshot:create {name} {--compress}', function (string $name): void {
+        Storage::disk('snapshots')->put("{$name}.sql.zst", 'zstd bytes');
+    });
+
+    $this->withToken('secret-token')
+        ->postJson('/internal/snapshots')
+        ->assertOk()
+        ->assertJsonPath('name', fn (string $name): bool => str_ends_with($name, '.sql.zst'));
+});
+
 it('hides rejected files from the listing', function (): void {
     config(['db-snapshot-sync.api.reject' => ['.sanitized.', 'testing']]);
 

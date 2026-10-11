@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
 use Laravel\Pulse\Facades\Pulse;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\Compression;
 use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\Sanitizer;
 use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\SanitizerFactory;
 use Phattarachai\DbSnapshotSyncLaravel\Support\CaBundle;
@@ -185,28 +186,14 @@ class SyncCommand extends Command
             ->get('/'.$this->apiPath('snapshots/latest'))
             ->throw();
 
-        // The source may serve either a compressed (.sql.gz) or a plain (.sql)
-        // dump. Name the local file by the payload's real type — sniffed from the
-        // gzip magic bytes — so the sanitizer and snapshot:load agree with the
-        // content instead of a guessed extension.
-        $localName = $stem.($this->isGzip($rawPath) ? '.sql.gz' : '.sql');
+        // The source may serve a gzip (.sql.gz), zstd (.sql.zst) or plain (.sql)
+        // dump. Name the local file by the payload's real type — sniffed from its
+        // magic bytes — so the sanitizer and snapshot:load agree with the content
+        // instead of a guessed extension.
+        $localName = $stem.Compression::sniff($rawPath)->suffix();
         $disk->move($rawName, $localName);
 
         return $localName;
-    }
-
-    private function isGzip(string $path): bool
-    {
-        $handle = fopen($path, 'rb');
-
-        if ($handle === false) {
-            return false;
-        }
-
-        $magic = (string) fread($handle, 2);
-        fclose($handle);
-
-        return $magic === "\x1f\x8b";
     }
 
     private function sanitize(Sanitizer $sanitizer, string $downloaded): string
@@ -256,7 +243,7 @@ class SyncCommand extends Command
     private function loadWithSnapshotLoad(string $name, string $connection, array $flags): void
     {
         $arguments = [
-            'name' => preg_replace('/\.sql(\.gz)?$/', '', $name),
+            'name' => Compression::stem($name),
             '--connection' => $connection,
         ];
 

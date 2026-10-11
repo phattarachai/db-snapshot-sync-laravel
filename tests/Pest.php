@@ -5,7 +5,9 @@ declare(strict_types=1);
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Facades\Storage;
 use League\Flysystem\UnableToReadFile;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\Zstd;
 use Phattarachai\DbSnapshotSyncLaravel\Tests\TestCase;
+use Symfony\Component\Process\Process;
 
 uses(TestCase::class)->in('Feature', 'Unit');
 
@@ -34,4 +36,29 @@ function driveLikeDisk(string $name, array $config = []): FilesystemAdapter
     Storage::set($name, $disk);
 
     return $disk;
+}
+
+function zstdMissing(): bool
+{
+    try {
+        Zstd::fromConfig();
+
+        return false;
+    } catch (RuntimeException) {
+        return true;
+    }
+}
+
+/**
+ * Compress (or with $decompress, expand) $data with the zstd CLI, independently
+ * of the package's own stream code.
+ */
+function zstd(string $data, bool $decompress = false): string
+{
+    $zstd = Zstd::fromConfig();
+
+    return new Process($decompress ? $zstd->decompressCommand() : $zstd->compressCommand())
+        ->setInput($data)
+        ->mustRun()
+        ->getOutput();
 }

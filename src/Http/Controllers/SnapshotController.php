@@ -9,6 +9,8 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Storage;
+use Phattarachai\DbSnapshotSyncLaravel\Backup\SnapshotFile;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\Compression;
 use Phattarachai\DbSnapshotSyncLaravel\Support\DumpOptions;
 use Phattarachai\DbSnapshotSyncLaravel\Support\MySqlTableDataExclusion;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -55,7 +57,7 @@ class SnapshotController
         }
 
         $disk = $this->disk();
-        $file = "{$name}.sql.gz";
+        $file = $name.Compression::configured()->suffix();
 
         abort_unless($disk->exists($file), 500, 'snapshot:create finished but the expected file is missing.');
 
@@ -138,7 +140,7 @@ class SnapshotController
         $reject = (array) config('db-snapshot-sync.api.reject', []);
 
         return collect($disk->files())
-            ->filter(fn (string $file): bool => str_ends_with($file, '.sql.gz') || str_ends_with($file, '.sql'))
+            ->filter(SnapshotFile::isSnapshot(...))
             ->reject(fn (string $file): bool => array_any($reject, fn (string $fragment): bool => str_contains($file, $fragment)))
             ->sortByDesc(fn (string $file): int => $disk->lastModified($file))
             ->values();

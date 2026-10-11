@@ -103,6 +103,24 @@ it('names a gzipped download .sql.gz and sanitizes it in place', function () use
         ->toContain('CREATE TABLE foo');
 });
 
+it('names a zstd download .sql.zst and sanitizes it in place, still zstd', function () use ($dump): void {
+    config([
+        'db-snapshot-sync.sync.allowed_environments' => ['testing'],
+        'db-snapshot-sync.sanitizer.pgsql.drop_prefixes' => ['\\restrict', 'SET transaction_timeout'],
+    ]);
+    $disk = Storage::fake('snapshots');
+    Http::fake(['source.test/*' => Http::response(zstd($dump))]);
+
+    $this->artisan('snapshot:sync', ['--no-load' => true])->assertSuccessful();
+
+    $files = $disk->files();
+    expect($files)->toHaveCount(1);
+    expect($files[0])->toEndWith('.sql.zst');
+    expect(zstd($disk->get($files[0]), decompress: true))
+        ->not->toContain('\\restrict')
+        ->toContain('CREATE TABLE foo');
+})->skip(fn (): bool => zstdMissing(), 'zstd not available');
+
 it('refuses to run outside the allowed environments', function (): void {
     // Default testbench environment is "testing", which is not allowed by default.
     $this->artisan('snapshot:sync')

@@ -29,6 +29,12 @@ it('detects the engine through gzip, by magic bytes not extension', function () 
     expect(DumpEngine::detect($this->disk->path('snap.sql')))->toBe(DumpEngine::MYSQL);
 });
 
+it('detects the engine through zstd', function () use ($pgDump): void {
+    $this->disk->put('snap.sql.zst', zstd($pgDump));
+
+    expect(DumpEngine::detect($this->disk->path('snap.sql.zst')))->toBe(DumpEngine::PGSQL);
+})->skip(fn (): bool => zstdMissing(), 'zstd not available');
+
 it('returns null for an unrecognised header or a missing file', function (): void {
     $this->disk->put('snap.sql', "CREATE TABLE foo (id int);\n");
 

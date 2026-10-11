@@ -8,6 +8,7 @@ use Generator;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Schema\Grammars\PostgresGrammar;
 use Illuminate\Support\Facades\DB;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\SnapshotStream;
 use RuntimeException;
 use Symfony\Component\Process\Exception\ExceptionInterface as ProcessException;
 use Symfony\Component\Process\Process;
@@ -38,7 +39,7 @@ class PsqlLoader
     public function __construct(private readonly string $binary = 'psql') {}
 
     /**
-     * Load the plain or gzipped dump at $path into $connection.
+     * Load the plain, gzip or zstd dump at $path into $connection.
      *
      * @throws RuntimeException when psql cannot start or any statement fails
      */
@@ -135,29 +136,25 @@ class PsqlLoader
     }
 
     /**
-     * Stream the dump into psql in chunks, wrapped in BEGIN/COMMIT. gzread() reads
-     * a plain file as-is and a multi-member gzip to its end, so one path serves
-     * every snapshot shape. psql's own --single-transaction is not used: it commits
-     * at end of input, however early that input ended.
+     * Stream the dump into psql in chunks, wrapped in BEGIN/COMMIT. SnapshotStream
+     * decompresses every snapshot shape, and its close() fails a zstd file that is
+     * corrupt, before COMMIT is sent. psql's own --single-transaction is not used:
+     * it commits at end of input, however early that input ended.
      *
      * @return Generator<int, string>
      */
     private function input(string $path, ?string $drop): Generator
     {
-        $handle = @gzopen($path, 'rb');
+        $stream = SnapshotStream::read($path);
 
-        if ($handle === false) {
-            throw new RuntimeException("Unable to open snapshot for loading: {$path}");
-        }
-
-        return (function () use ($handle, $drop): Generator {
+        return (function () use ($stream, $drop): Generator {
             try {
                 yield "BEGIN;\n".($drop ?? '');
 
                 $tail = '';
 
-                while (! gzeof($handle)) {
-                    $chunk = gzread($handle, self::CHUNK_BYTES);
+                while (! feof($stream->handle)) {
+                    $chunk = fread($stream->handle, self::CHUNK_BYTES);
 
                     if ($chunk === false) {
                         throw new RuntimeException('Failed reading the snapshot while loading it.');
@@ -168,13 +165,15 @@ class PsqlLoader
                     yield $chunk;
                 }
 
+                $stream->close();
+
                 if (! str_contains($tail, self::TRAILER)) {
                     throw new RuntimeException('The snapshot does not end with pg_dump\'s "'.self::TRAILER.'" trailer, so it is truncated or not a pg_dump. Nothing was committed.');
                 }
 
                 yield "\nCOMMIT;\n";
             } finally {
-                gzclose($handle);
+                $stream->abort();
             }
         })();
     }

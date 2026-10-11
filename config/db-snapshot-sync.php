@@ -8,11 +8,39 @@ return [
     |--------------------------------------------------------------------------
     | Snapshots disk
     |--------------------------------------------------------------------------
-    | The filesystem disk holding the .sql / .sql.gz snapshots. Must match the
-    | disk configured for spatie/laravel-db-snapshots (config/db-snapshots.php).
+    | The filesystem disk holding the .sql / .sql.gz / .sql.zst snapshots. Must
+    | match the disk configured for spatie/laravel-db-snapshots
+    | (config/db-snapshots.php).
     */
 
     'disk' => env('DB_SNAPSHOT_SYNC_DISK', 'snapshots'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Compression
+    |--------------------------------------------------------------------------
+    | The format `snapshot:create --compress` writes — the nightly schedule and
+    | the snapshots the internal API builds for a sync alike: gzip (.sql.gz,
+    | spatie's own) or zstd (.sql.zst). Reading never depends on this: every
+    | command sniffs a file's format from its magic bytes, so a disk holding
+    | both loads, syncs and backs up either.
+    |
+    | zstd shrinks a pg_dump far more than gzip, whose 32 KB window misses
+    | repeats further apart (one 4 GB dump: gzip 251 MB, zstd -10 21 MB, in a
+    | second with -T0). PHP has no built-in zstd, so the `zstd` CLI does the
+    | work, on the source and on every machine that syncs from it. Left null,
+    | `binary` is found on PATH or in /opt/homebrew/bin, /usr/local/bin,
+    | /usr/bin. Levels above 19 add --ultra; `threads` 0 uses every core.
+    */
+
+    'compression' => [
+        'format' => env('DB_SNAPSHOT_SYNC_COMPRESSION', 'gzip'),
+        'zstd' => [
+            'binary' => env('DB_SNAPSHOT_SYNC_ZSTD'),
+            'level' => (int) env('DB_SNAPSHOT_SYNC_ZSTD_LEVEL', 10),
+            'threads' => (int) env('DB_SNAPSHOT_SYNC_ZSTD_THREADS', 0),
+        ],
+    ],
 
     /*
     |--------------------------------------------------------------------------
