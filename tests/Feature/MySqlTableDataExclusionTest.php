@@ -77,6 +77,22 @@ it('dumps an excluded table\'s schema but not its data, and skips a missing one'
         ->not->toContain('`cache`');
 });
 
+it('appends the excluded schema as a zstd frame to a zstd snapshot, and loads it back', function (): void {
+    config(['db-snapshot-sync.compression.format' => 'zstd']);
+
+    $name = $this->withToken('secret-token')->postJson('/internal/snapshots')->assertOk()->json('name');
+
+    expect($name)->toEndWith('.sql.zst')
+        ->and(zstd($this->disk->get($name), decompress: true))->toContain('CREATE TABLE `jobs`')->not->toContain('dropped-job');
+
+    DB::connection('mysql')->getSchemaBuilder()->dropAllTables();
+
+    Artisan::call('snapshot:load', ['name' => str_replace('.sql.zst', '', $name), '--force' => true, '--stream' => true]);
+
+    expect(DB::connection('mysql')->table('users')->pluck('name')->all())->toBe(['kept-user'])
+        ->and(DB::connection('mysql')->table('jobs')->count())->toBe(0);
+})->skip(fn (): bool => zstdMissing(), 'zstd not available');
+
 it('loads back with the excluded table present and empty', function (): void {
     $name = $this->withToken('secret-token')->postJson('/internal/snapshots')->assertOk()->json('name');
 

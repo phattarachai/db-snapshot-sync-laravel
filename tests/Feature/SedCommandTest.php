@@ -30,13 +30,13 @@ it('ignores .sanitized. intermediates when listing', function (): void {
 
     $this->artisan('snapshot:sed')
         ->assertSuccessful()
-        ->expectsOutputToContain('No .sql or .sql.gz files found');
+        ->expectsOutputToContain('No .sql, .sql.gz or .sql.zst files found');
 });
 
 it('reports an empty disk', function (): void {
     $this->artisan('snapshot:sed')
         ->assertSuccessful()
-        ->expectsOutputToContain('No .sql or .sql.gz files found');
+        ->expectsOutputToContain('No .sql, .sql.gz or .sql.zst files found');
 });
 
 $mysqlDump = "-- MySQL dump 10.13  Distrib 8.0.36, for Linux (x86_64)\n/*!50013 DEFINER=`root`@`%` SQL SECURITY DEFINER */\nCREATE TABLE bar (id int);\n";

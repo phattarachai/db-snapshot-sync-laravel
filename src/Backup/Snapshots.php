@@ -11,7 +11,7 @@ use Throwable;
 final class Snapshots
 {
     /**
-     * Every .sql / .sql.gz directly under $directory on $disk, newest taken first
+     * Every .sql / .sql.gz / .sql.zst directly under $directory on $disk, newest taken first
      * (see SnapshotFile::takenAt()), the later upload first on a tie.
      *
      * @return Collection<int, SnapshotFile>

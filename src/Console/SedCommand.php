@@ -9,6 +9,7 @@ use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
+use Phattarachai\DbSnapshotSyncLaravel\Backup\SnapshotFile;
 use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\SanitizerFactory;
 use Phattarachai\DbSnapshotSyncLaravel\Support\DumpEngine;
 
@@ -31,7 +32,7 @@ class SedCommand extends Command
         $snapshots = $this->findSnapshots($disk);
 
         if ($snapshots->isEmpty()) {
-            $this->info('No .sql or .sql.gz files found on the snapshots disk.');
+            $this->info('No .sql, .sql.gz or .sql.zst files found on the snapshots disk.');
 
             return self::SUCCESS;
         }
@@ -93,7 +94,7 @@ class SedCommand extends Command
     private function findSnapshots(Filesystem $disk): Collection
     {
         return collect($disk->files())
-            ->filter(fn (string $file): bool => str_ends_with($file, '.sql') || str_ends_with($file, '.sql.gz'))
+            ->filter(SnapshotFile::isSnapshot(...))
             ->reject(fn (string $file): bool => str_contains($file, '.sanitized.'))
             ->sortByDesc(fn (string $file): int => $disk->lastModified($file))
             ->values();
@@ -115,6 +116,7 @@ class SedCommand extends Command
                 $name,
                 "{$name}.sql",
                 "{$name}.sql.gz",
+                "{$name}.sql.zst",
             ], true));
         }
 

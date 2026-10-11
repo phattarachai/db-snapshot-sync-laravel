@@ -7,6 +7,22 @@ Release notes are drafted automatically from merged pull requests and published 
 
 This file records anything released before that automation landed.
 
+## v1.3.0
+
+### Added
+
+- zstd snapshots (`.sql.zst`). `DB_SNAPSHOT_SYNC_COMPRESSION=zstd` makes `snapshot:create --compress`
+  (the schedule and the API's `--fresh` snapshot) write zstd instead of gzip, through the `zstd` CLI.
+  Every reader sniffs the format by magic bytes: the API lists and serves `.sql.zst`, `snapshot:sync`
+  names a zstd download `.sql.zst`, both sanitizers keep it zstd, psql loads it, and backup, prune
+  and drill handle it. spatie's `SnapshotFactory`, `SnapshotRepository` and `Snapshot` are extended,
+  so `snapshot:load`, `:list`, `:delete` and `:cleanup` see `.sql.zst` too. gzip stays the default.
+
+### Fixed
+
+- The MySQL sanitizer's pipeline runs with `pipefail`, so a corrupt or truncated input fails instead
+  of leaving a short `.sanitized.` copy.
+
 ## v1.2.2
 
 ### Fixed

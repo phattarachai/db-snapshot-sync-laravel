@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Phattarachai\DbSnapshotSyncLaravel\Support;
 
+use Phattarachai\DbSnapshotSyncLaravel\Compression\SnapshotStream;
+
 /**
  * Identifies which dump tool wrote a snapshot by reading its header, so a dump
  * is never sanitized or loaded against a connection of the other engine — a
@@ -24,8 +26,8 @@ final class DumpEngine
     private const int HEADER_BYTES = 8192;
 
     /**
-     * The engine that wrote the dump at $path (gzip or plain, sniffed by magic
-     * bytes), or null when the header names neither.
+     * The engine that wrote the dump at $path (plain, gzip or zstd, sniffed by
+     * magic bytes), or null when the header names neither.
      */
     public static function detect(string $path): ?string
     {
@@ -62,26 +64,10 @@ final class DumpEngine
             return '';
         }
 
-        $handle = fopen($path, 'rb');
-        if ($handle === false) {
-            return '';
-        }
+        $stream = SnapshotStream::read($path);
+        $header = (string) stream_get_contents($stream->handle, self::HEADER_BYTES);
+        $stream->close();
 
-        $magic = (string) fread($handle, 2);
-        fclose($handle);
-
-        if ($magic === "\x1f\x8b") {
-            $gz = gzopen($path, 'rb');
-            if ($gz === false) {
-                return '';
-            }
-
-            $header = (string) gzread($gz, self::HEADER_BYTES);
-            gzclose($gz);
-
-            return $header;
-        }
-
-        return (string) file_get_contents($path, false, null, 0, self::HEADER_BYTES);
+        return $header;
     }
 }

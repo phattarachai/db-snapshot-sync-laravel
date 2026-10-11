@@ -85,6 +85,18 @@ it('round-trips gzipped snapshots', function () use ($dump): void {
         ->toContain('CREATE TABLE foo');
 });
 
+it('round-trips zstd snapshots, line filters and patterns alike', function () use ($dump): void {
+    $this->disk->put('snap.sql.zst', zstd($dump));
+
+    $out = (new PostgresSanitizer(['\\restrict', '\\unrestrict'], [], ['/^ALTER TABLE foo OWNER TO postgres;\n?/m']))->sanitize($this->disk, 'snap.sql.zst');
+
+    expect($out)->toBe('snap.sql.zst');
+    expect(zstd($this->disk->get('snap.sql.zst'), decompress: true))
+        ->not->toContain('\\restrict')
+        ->not->toContain('OWNER TO')
+        ->toContain('CREATE TABLE foo');
+})->skip(fn (): bool => zstdMissing(), 'zstd not available');
+
 it('sanitizes plain content even when the file is mislabeled with a .gz name', function () use ($dump): void {
     // A source serving an uncompressed dump under a .sql.gz name used to crash
     // gzdecode(). Detection is by content (magic bytes), not the extension.

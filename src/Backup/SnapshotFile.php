@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace Phattarachai\DbSnapshotSyncLaravel\Backup;
 
 use Illuminate\Support\Carbon;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\Compression;
 
 /**
- * One .sql / .sql.gz object on a disk.
+ * One .sql / .sql.gz / .sql.zst object on a disk.
  */
 final readonly class SnapshotFile
 {
@@ -19,7 +20,7 @@ final readonly class SnapshotFile
 
     public static function isSnapshot(string $path): bool
     {
-        return str_ends_with($path, '.sql.gz') || str_ends_with($path, '.sql');
+        return Compression::isSnapshotName($path);
     }
 
     public function name(): string
@@ -28,11 +29,11 @@ final readonly class SnapshotFile
     }
 
     /**
-     * The snapshot's name as spatie knows it: the file name without .sql / .sql.gz.
+     * The snapshot's name as spatie knows it: the file name without .sql / .sql.gz / .sql.zst.
      */
     public function stem(): string
     {
-        return (string) preg_replace('/\.sql(\.gz)?$/', '', $this->name());
+        return Compression::stem($this->name());
     }
 
     /**

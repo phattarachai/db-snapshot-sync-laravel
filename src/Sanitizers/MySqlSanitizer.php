@@ -6,6 +6,8 @@ namespace Phattarachai\DbSnapshotSyncLaravel\Sanitizers;
 
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Process;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\Compression;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\Zstd;
 use RuntimeException;
 
 final class MySqlSanitizer implements Sanitizer
@@ -15,14 +17,23 @@ final class MySqlSanitizer implements Sanitizer
      */
     public function __construct(private array $sedExpressions = []) {}
 
+    /**
+     * Writes {stem}.sanitized.sql.zst for a zstd snapshot, else {stem}.sanitized.sql.gz.
+     */
     public function sanitize(Filesystem $disk, string $file): string
     {
         $inputPath = $disk->path($file);
-        $outputName = $this->sanitizedNameFor($file);
+        $input = Compression::sniff($inputPath);
+        $output = $input === Compression::Zstd ? Compression::Zstd : Compression::Gzip;
+        $outputName = Compression::stem($file).'.sanitized'.$output->suffix();
         $outputPath = $disk->path($outputName);
 
         $stages = [
-            (str_ends_with($inputPath, '.gz') ? 'gunzip -c ' : 'cat ').escapeshellarg($inputPath),
+            match ($input) {
+                Compression::None => 'cat',
+                Compression::Gzip => 'gunzip -c',
+                Compression::Zstd => $this->shell(Zstd::fromConfig()->decompressCommand()),
+            }.' '.escapeshellarg($inputPath),
         ];
 
         if ($this->sedExpressions !== []) {
@@ -32,9 +43,11 @@ final class MySqlSanitizer implements Sanitizer
             ));
         }
 
-        $stages[] = 'gzip > '.escapeshellarg($outputPath);
+        $stages[] = ($output === Compression::Zstd ? $this->shell(Zstd::fromConfig()->compressCommand()) : 'gzip').' > '.escapeshellarg($outputPath);
 
-        $result = Process::run(['bash', '-c', implode(' | ', $stages)]);
+        // pipefail: a corrupt or truncated input fails the run instead of
+        // leaving a short sanitized copy behind.
+        $result = Process::run(['bash', '-c', 'set -o pipefail; '.implode(' | ', $stages)]);
 
         if ($result->failed()) {
             throw new RuntimeException("sed pipeline failed: {$result->errorOutput()}");
@@ -43,10 +56,11 @@ final class MySqlSanitizer implements Sanitizer
         return $outputName;
     }
 
-    private function sanitizedNameFor(string $file): string
+    /**
+     * @param  list<string>  $command
+     */
+    private function shell(array $command): string
     {
-        $stem = preg_replace('/\.sql(\.gz)?$/', '', $file);
-
-        return "{$stem}.sanitized.sql.gz";
+        return implode(' ', array_map(escapeshellarg(...), $command));
     }
 }

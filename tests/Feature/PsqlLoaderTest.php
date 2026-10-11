@@ -134,6 +134,23 @@ it('refuses a truncated dump without committing any of it', function (): void {
     expect(DB::connection('pgsql')->table('existing')->value('name'))->toBe('before-the-load');
 });
 
+it('loads a zstd dump, and refuses a truncated one without committing it', function (): void {
+    $packed = zstd(pgDumpWithBackslashQuote());
+
+    file_put_contents($this->dumpPath, substr($packed, 0, strlen($packed) - 8));
+
+    expect(fn () => (new PsqlLoader)->load($this->dumpPath, 'pgsql'))->toThrow(RuntimeException::class);
+    DB::purge('pgsql');
+    expect(DB::connection('pgsql')->table('existing')->value('name'))->toBe('before-the-load');
+
+    file_put_contents($this->dumpPath, $packed);
+
+    (new PsqlLoader)->load($this->dumpPath, 'pgsql');
+    DB::purge('pgsql');
+
+    expect(DB::connection('pgsql')->table('tracks')->count())->toBe(2);
+})->skip(fn (): bool => zstdMissing(), 'zstd not available');
+
 it('keeps existing tables when drop-tables is off', function (): void {
     file_put_contents($this->dumpPath, pgDumpWithBackslashQuote());
 

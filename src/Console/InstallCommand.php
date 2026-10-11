@@ -107,7 +107,7 @@ class InstallCommand extends Command
             PHP);
 
         $this->writeRawHeader('5. Ignore local snapshots — .gitignore:');
-        $this->writeRawSnippet('storage/app/snapshots/*.sql.gz');
+        $this->writeRawSnippet("storage/app/snapshots/*.sql.gz\nstorage/app/snapshots/*.sql.zst");
 
         $this->writeRawHeader('6. On the SOURCE server (production/UAT): set the same INTERNAL_API_TOKEN, set DB_SNAPSHOT_SYNC_API=true, and set this project\'s URL as DB_SNAPSHOT_SYNC_PROD_URL locally.');
     }

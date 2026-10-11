@@ -12,10 +12,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Phattarachai\DbSnapshotSyncLaravel\Events\SnapshotDrillCompleted;
+use Phattarachai\DbSnapshotSyncLaravel\Snapshots\Snapshot;
 use Phattarachai\DbSnapshotSyncLaravel\Support\DumpEngine;
 use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
 use RuntimeException;
-use Spatie\DbSnapshots\Snapshot;
 use Throwable;
 
 /**

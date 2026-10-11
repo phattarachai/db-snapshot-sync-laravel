@@ -6,14 +6,16 @@ namespace Phattarachai\DbSnapshotSyncLaravel\Support;
 
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\Compression;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\SnapshotStream;
 use Spatie\DbSnapshots\DbDumperFactory;
 
 /**
  * mysqldump has no per-table "schema but no data" flag, and `--ignore-table`
  * drops the schema too. So the sync dump runs in two passes: the main dump
  * ignores the excluded tables entirely, then a `--no-data` dump of just those
- * tables is appended to the same file (as a second gzip member — valid gzip,
- * read whole by `gunzip`, `gzopen` and so spatie's streamed load).
+ * tables is appended to the same file (as a second gzip member or zstd frame —
+ * valid in both formats, read whole by `gunzip`/`gzopen` and `zstd -d`).
  */
 class MySqlTableDataExclusion
 {
@@ -51,7 +53,8 @@ class MySqlTableDataExclusion
     }
 
     /**
-     * Dump the given tables' schema (no rows) and append it to the snapshot file.
+     * Dump the given tables' schema (no rows) and append it to the snapshot file,
+     * as a new gzip member or zstd frame when the snapshot is compressed.
      *
      * @param  list<string>  $tables
      */
@@ -78,7 +81,9 @@ class MySqlTableDataExclusion
 
             $sql = (string) file_get_contents($schemaFile);
 
-            file_put_contents($path, str_ends_with($path, '.gz') ? gzencode($sql, 9) : $sql, FILE_APPEND);
+            $snapshot = SnapshotStream::write($path, Compression::sniff($path), append: true);
+            fwrite($snapshot->handle, $sql);
+            $snapshot->close();
         } finally {
             @unlink($schemaFile);
         }

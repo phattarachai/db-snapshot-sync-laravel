@@ -6,6 +6,8 @@ namespace Phattarachai\DbSnapshotSyncLaravel\Sanitizers;
 
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Filesystem\FilesystemAdapter;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\Compression;
+use Phattarachai\DbSnapshotSyncLaravel\Compression\SnapshotStream;
 use RuntimeException;
 
 final class PostgresSanitizer implements Sanitizer
@@ -39,66 +41,55 @@ final class PostgresSanitizer implements Sanitizer
 
     /**
      * Copy the dump line-by-line, dropping matched lines, so an arbitrarily large
-     * dump never has to sit in memory as a whole string. Gzip is detected by the
-     * file's magic bytes, not its name — a source may serve a plain dump under a
-     * .sql.gz name — and the input's format is preserved on write.
+     * dump never has to sit in memory as a whole string. The format (plain, gzip
+     * or zstd) is detected by the file's magic bytes, not its name — a source may
+     * serve a plain dump under a .sql.gz name — and is preserved on write.
      */
     private function streamLineFilters(Filesystem $disk, string $file): void
     {
         $path = $this->localPath($disk, $file);
-        $isGz = $this->isGzipped($path);
         $temp = $path.'.sanitizing';
 
-        $in = $isGz ? gzopen($path, 'rb') : fopen($path, 'rb');
-        if ($in === false) {
-            throw new RuntimeException("Unable to open snapshot for sanitizing: {$path}");
-        }
+        $in = SnapshotStream::read($path);
+        $out = SnapshotStream::write($temp, Compression::sniff($path));
 
-        $out = $isGz ? gzopen($temp, 'wb9') : fopen($temp, 'wb');
-        if ($out === false) {
-            $isGz ? gzclose($in) : fclose($in);
+        try {
+            while (($line = fgets($in->handle)) !== false) {
+                if ($this->matchesPrefix($line) || $this->matchesContains($line)) {
+                    continue;
+                }
 
-            throw new RuntimeException("Unable to write sanitized snapshot: {$temp}");
-        }
-
-        while (($line = $isGz ? gzgets($in) : fgets($in)) !== false) {
-            if ($this->matchesPrefix($line) || $this->matchesContains($line)) {
-                continue;
+                fwrite($out->handle, $line);
             }
 
-            $isGz ? gzwrite($out, $line) : fwrite($out, $line);
-        }
+            $in->close();
+            $out->close();
+        } catch (RuntimeException $e) {
+            $in->abort();
+            $out->abort();
+            @unlink($temp);
 
-        $isGz ? gzclose($in) : fclose($in);
-        $isGz ? gzclose($out) : fclose($out);
+            throw $e;
+        }
 
         rename($temp, $path);
     }
 
     private function applyPatterns(Filesystem $disk, string $file): void
     {
-        $raw = (string) $disk->get($file);
-        $isGz = str_starts_with($raw, "\x1f\x8b");
-        $content = $isGz ? (string) gzdecode($raw) : $raw;
+        $path = $this->localPath($disk, $file);
+        $content = SnapshotStream::contents($path);
 
         foreach ($this->dropPatterns as $pattern) {
             $content = (string) preg_replace($pattern, '', $content);
         }
 
-        $disk->put($file, $isGz ? (string) gzencode($content, 9) : $content);
-    }
+        $temp = $path.'.sanitizing';
+        $out = SnapshotStream::write($temp, Compression::sniff($path));
+        fwrite($out->handle, $content);
+        $out->close();
 
-    private function isGzipped(string $path): bool
-    {
-        $handle = fopen($path, 'rb');
-        if ($handle === false) {
-            return false;
-        }
-
-        $magic = (string) fread($handle, 2);
-        fclose($handle);
-
-        return $magic === "\x1f\x8b";
+        rename($temp, $path);
     }
 
     private function matchesPrefix(string $line): bool

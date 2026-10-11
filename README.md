@@ -15,7 +15,7 @@ orchestrator, and the token-protected **internal API** the source server exposes
 ```
 snapshot:sync --fresh
   → trigger a fresh dump on production (internal API)
-  → download the .sql.gz
+  → download the .sql.gz (or .sql.zst)
   → snapshot:sed  (strip directives that reject on a local client)
   → load: psql, in one transaction (PostgreSQL)
           snapshot:load --drop-tables --force --stream (MySQL/MariaDB)
@@ -52,7 +52,7 @@ source-side snippets you paste into `config/db-snapshots.php`, `config/filesyste
 
 - **`snapshot:sed {name?} {--latest} {--connection=} {--driver=}`** — sanitize a snapshot on the
   disk so it re-imports cleanly. Postgres mutates in place; MySQL writes a separate
-  `.sanitized.sql.gz`. Without `--connection`/`--driver` it uses the rules for the engine named in
+  `.sanitized.sql.gz` (`.sanitized.sql.zst` for a zstd snapshot). Without `--connection`/`--driver` it uses the rules for the engine named in
   the dump's header, falling back to the default connection's driver.
 - **`snapshot:sync {--fresh} {--source=production} {--connection=} {--no-load} {--keep-raw}`** —
   pull the latest snapshot from a source, sanitize, and load into the local DB. Runs only in the
@@ -99,7 +99,7 @@ connection's driver picks the sanitizer (so a MySQL dump gets its `DEFINER=` lin
 when the default is `pgsql`), and the name is passed to `snapshot:load --connection`.
 
 **Engine guard.** Before sanitizing, the sync reads the dump's header (`-- MySQL dump` /
-`-- MariaDB dump` vs `-- PostgreSQL database dump`, gzipped or not). If it names a different engine
+`-- MariaDB dump` vs `-- PostgreSQL database dump`, plain, gzip or zstd). If it names a different engine
 from the target connection's driver, the sync stops with an error — nothing is sanitized or
 loaded, and the download stays on the disk. Without this, `snapshot:load --drop-tables` would
 drop every table on the wrong database first and only then fail on the foreign SQL. A dump whose
@@ -161,7 +161,7 @@ This needs the PostgreSQL client on the machine running the sync. Set `DB_SNAPSH
 
 ## Configuration
 
-`config/db-snapshot-sync.php` covers the disk name, token, source URLs, load flags, the `psql` binary,
+`config/db-snapshot-sync.php` covers the disk name, the compression format, token, source URLs, load flags, the `psql` binary,
 the per-driver sanitizer rules (add a prefix/`sed` expression when a new dump quirk appears), and
 the API's reject-list (never serve a schema-only baseline or a `.sanitized.` intermediate).
 
@@ -181,13 +181,36 @@ On **PostgreSQL** the exclusion is pg_dump's `--exclude-table-data`. **MySQL/Mar
 has no per-table "schema but no data" flag (`--ignore-table` drops the schema too), so the sync
 dump runs in two passes: the main dump `--ignore-table`s the excluded tables, then a `--no-data`
 dump of just those tables (the ones that exist, checked in `information_schema`) is appended to the
-snapshot as a second gzip member. `gunzip`, `zcat` and spatie's `snapshot:load --stream` read the
+snapshot as a second gzip member (a second frame in a zstd snapshot, which every zstd reader
+handles). `gunzip`, `zcat` and spatie's `snapshot:load --stream` read the
 whole file; PHP's `gzdecode()` (spatie's non-streamed load) stops at the first member, so load a raw
 MySQL sync snapshot with `--stream`. `snapshot:sync` already does both: the MySQL sanitizer
 recompresses the file into a single member.
 
 `dump.rows_per_insert` is PostgreSQL-only (it becomes `--rows-per-insert`); mysqldump's default
 `--extended-insert` already batches rows.
+
+### Compression: gzip or zstd
+
+`snapshot:create --compress` writes gzip (`.sql.gz`) by default, as spatie does. Set
+`DB_SNAPSHOT_SYNC_COMPRESSION=zstd` (config `compression.format`) to write `.sql.zst` instead; it
+applies to the scheduled snapshot and to the one the API builds for `--fresh` alike. zstd matches
+repeats across the whole dump where gzip's 32 KB window cannot, so a pg_dump shrinks far more: one
+4.17 GB dump came to 251 MB with gzip and 21 MB with `zstd -10 -T0`, in about a second.
+
+Reading never depends on the setting. Every command sniffs a file's format from its magic bytes, so
+a disk holding both formats lists, serves, syncs, sanitizes, loads, backs up and drills either. The
+package extends spatie's `SnapshotFactory`, `SnapshotRepository` and `Snapshot` so that
+`snapshot:create`, `snapshot:load` (streamed or not), `snapshot:list`, `snapshot:delete` and
+`snapshot:cleanup` handle `.sql.zst` too; gzip and plain snapshots take spatie's own code path.
+
+PHP has no built-in zstd, so the [`zstd` CLI](https://github.com/facebook/zstd) does the work: on
+the source, and on every machine that syncs a zstd snapshot (`brew install zstd`,
+`apt install zstd`). It is looked up on `PATH`, then in `/opt/homebrew/bin`, `/usr/local/bin` and
+`/usr/bin`, which covers a launchd job or php-fpm whose `PATH` is only `/usr/bin:/bin`. Set
+`DB_SNAPSHOT_SYNC_ZSTD` to point elsewhere. `DB_SNAPSHOT_SYNC_ZSTD_LEVEL` (default `10`; above `19`
+adds `--ultra`) and `DB_SNAPSHOT_SYNC_ZSTD_THREADS` (default `0`, every core) tune the writer. A
+corrupt or truncated `.sql.zst` fails the load or sanitize instead of loading part of it.
 
 ### Sources with an incomplete TLS chain
 
@@ -236,7 +259,7 @@ run the same code; they go on `DB_SNAPSHOT_SYNC_BACKUP_QUEUE` when set, never re
 
 On each target, `snapshot:backup`:
 
-- **uploads** every local `.sql` / `.sql.gz` from the last `daily_days` that is not yet under
+- **uploads** every local `.sql` / `.sql.gz` / `.sql.zst` from the last `daily_days` that is not yet under
   `{path}/daily/` with the same size. A night the box missed goes up on the next run, and a short
   copy left by an interrupted upload is replaced. Protected snapshots and anything in `api.reject`
   (`.sanitized.` intermediates) stay local. A file modified in the last 60 seconds is left for the
