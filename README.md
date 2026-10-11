@@ -1,9 +1,11 @@
 # DB Snapshot Sync
 
-[![Packagist Version](https://img.shields.io/packagist/v/phattarachai/db-snapshot-sync-laravel.svg?style=flat-square)](https://packagist.org/packages/phattarachai/db-snapshot-sync-laravel)
-[![Tests](https://img.shields.io/github/actions/workflow/status/phattarachai/db-snapshot-sync-laravel/run-tests.yml?branch=main&label=tests&style=flat-square)](https://github.com/phattarachai/db-snapshot-sync-laravel/actions/workflows/run-tests.yml)
-[![PHPStan](https://img.shields.io/github/actions/workflow/status/phattarachai/db-snapshot-sync-laravel/phpstan.yml?branch=main&label=phpstan&style=flat-square)](https://github.com/phattarachai/db-snapshot-sync-laravel/actions/workflows/phpstan.yml)
-[![License](https://img.shields.io/packagist/l/phattarachai/db-snapshot-sync-laravel.svg?style=flat-square)](LICENSE.md)
+[![Latest Version on Packagist](https://img.shields.io/packagist/v/phattarachai/db-snapshot-sync-laravel.svg?style=flat-square)](https://packagist.org/packages/phattarachai/db-snapshot-sync-laravel)
+[![Tests](https://img.shields.io/github/actions/workflow/status/phattarachai/db-snapshot-sync-laravel/run-tests.yml?branch=main&label=tests&style=flat-square)](https://github.com/phattarachai/db-snapshot-sync-laravel/actions/workflows/run-tests.yml?query=branch%3Amain)
+[![Code Style](https://img.shields.io/github/actions/workflow/status/phattarachai/db-snapshot-sync-laravel/fix-php-code-style-issues.yml?branch=main&label=code%20style&style=flat-square)](https://github.com/phattarachai/db-snapshot-sync-laravel/actions/workflows/fix-php-code-style-issues.yml?query=branch%3Amain)
+[![PHP Version](https://img.shields.io/packagist/dependency-v/phattarachai/db-snapshot-sync-laravel/php?style=flat-square&label=php&logo=php&logoColor=white)](https://packagist.org/packages/phattarachai/db-snapshot-sync-laravel)
+![Laravel Version](https://img.shields.io/badge/laravel-12%20%7C%2013-FF2D20?style=flat-square&logo=laravel&logoColor=white)
+[![Total Downloads](https://img.shields.io/packagist/dt/phattarachai/db-snapshot-sync-laravel.svg?style=flat-square)](https://packagist.org/packages/phattarachai/db-snapshot-sync-laravel)
 
 Rebuild a Laravel developer's local database from production in one command. Extends
 [`spatie/laravel-db-snapshots`](https://github.com/spatie/laravel-db-snapshots) with the three
