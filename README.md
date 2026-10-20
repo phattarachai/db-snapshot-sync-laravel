@@ -55,8 +55,9 @@ source-side snippets you paste into `config/db-snapshots.php`, `config/filesyste
   `.sanitized.sql.gz` (`.sanitized.sql.zst` for a zstd snapshot). Without `--connection`/`--driver` it uses the rules for the engine named in
   the dump's header, falling back to the default connection's driver.
 - **`snapshot:sync {--fresh} {--source=production} {--connection=} {--no-load} {--keep-raw}`** —
-  pull the latest snapshot from a source, sanitize, and load into the local DB. Runs only in the
-  environments listed in `db-snapshot-sync.sync.allowed_environments`.
+  pull the latest snapshot from a source, sanitize, and load into the local DB. Runs in every
+  environment except `production` unless configured otherwise; see
+  [Where `snapshot:sync` may run](#where-snapshotsync-may-run).
 
 - **`snapshot:backup`**, **`snapshot:prune {--days=} {--dry-run}`**, **`snapshot:backup-check`**,
   **`snapshot:drill {--disk=} {--connection=}`**: off-site backup, local retention, staleness
@@ -189,6 +190,25 @@ recompresses the file into a single member.
 
 `dump.rows_per_insert` is PostgreSQL-only (it becomes `--rows-per-insert`); mysqldump's default
 `--extended-insert` already batches rows.
+
+### Where `snapshot:sync` may run
+
+`snapshot:sync` overwrites the local database, so it refuses some environments. By default it runs
+everywhere except `production`: local, staging, a UAT box. Each project can change that with
+comma-separated env vars (entries may use `*` wildcards, as `app()->environment()` does):
+
+```dotenv
+DB_SNAPSHOT_SYNC_DENIED_ENVIRONMENTS=production,uat   # refuse these, run everywhere else
+DB_SNAPSHOT_SYNC_ALLOWED_ENVIRONMENTS=local,staging   # or: run only in these
+```
+
+A non-empty `allowed_environments` decides alone, and `denied_environments` is then ignored. Both
+are under `sync` in the published config.
+
+Upgrading from 1.3 or earlier: a config published by those versions hard-codes
+`'allowed_environments' => ['local', 'development']`, and that allow-list still wins. To get the new
+default, replace the `sync` block with the one in the package's
+[`config/db-snapshot-sync.php`](config/db-snapshot-sync.php).
 
 ### Compression: gzip or zstd
 

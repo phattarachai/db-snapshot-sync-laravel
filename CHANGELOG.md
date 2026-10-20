@@ -7,6 +7,17 @@ Release notes are drafted automatically from merged pull requests and published 
 
 This file records anything released before that automation landed.
 
+## v1.4.0
+
+### Changed
+
+- `snapshot:sync` runs by default in every environment except `production` (new
+  `sync.denied_environments`, env `DB_SNAPSHOT_SYNC_DENIED_ENVIRONMENTS`), instead of only `local`
+  and `development`. `sync.allowed_environments` (env `DB_SNAPSHOT_SYNC_ALLOWED_ENVIRONMENTS`) now
+  defaults to empty; when a project sets it, it still decides alone. A config published by 1.3 or
+  earlier keeps its `['local', 'development']` allow-list, so its behaviour does not change until
+  the `sync` block is replaced.
+
 ## v1.3.0
 
 ### Added

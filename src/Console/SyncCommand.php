@@ -36,10 +36,10 @@ class SyncCommand extends Command
             Pulse::stopRecording();
         }
 
-        $allowed = (array) config('db-snapshot-sync.sync.allowed_environments', ['local', 'development']);
+        $refusal = $this->environmentRefusal();
 
-        if (! app()->environment($allowed)) {
-            $this->error('snapshot:sync may only run in: '.implode(', ', $allowed).'.');
+        if ($refusal !== null) {
+            $this->error($refusal);
 
             return self::FAILURE;
         }
@@ -105,6 +105,25 @@ class SyncCommand extends Command
         $this->info('Done.');
 
         return self::SUCCESS;
+    }
+
+    /**
+     * A non-empty allow-list decides alone; otherwise every environment but the
+     * denied ones may sync.
+     */
+    private function environmentRefusal(): ?string
+    {
+        $allowed = array_values(array_filter((array) config('db-snapshot-sync.sync.allowed_environments', [])));
+
+        if ($allowed !== []) {
+            return app()->environment($allowed) ? null : 'snapshot:sync may only run in: '.implode(', ', $allowed).'.';
+        }
+
+        $denied = array_values(array_filter((array) config('db-snapshot-sync.sync.denied_environments', ['production'])));
+
+        return $denied !== [] && app()->environment($denied)
+            ? 'snapshot:sync may not run in: '.implode(', ', $denied).'.'
+            : null;
     }
 
     /**
