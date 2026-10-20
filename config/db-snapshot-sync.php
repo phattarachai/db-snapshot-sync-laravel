@@ -82,10 +82,16 @@ return [
     |--------------------------------------------------------------------------
     | Sync behaviour
     |--------------------------------------------------------------------------
+    | Where `snapshot:sync` may run, since it overwrites the local database.
+    | By default it runs in every environment except those in
+    | `denied_environments` (production). A non-empty `allowed_environments`
+    | wins instead: the sync then runs only in the environments it lists.
+    | Both take comma-separated env vars; entries may use wildcards (`prod*`).
     */
 
     'sync' => [
-        'allowed_environments' => ['local', 'development'],
+        'allowed_environments' => array_values(array_filter(array_map('trim', explode(',', (string) env('DB_SNAPSHOT_SYNC_ALLOWED_ENVIRONMENTS', ''))))),
+        'denied_environments' => array_values(array_filter(array_map('trim', explode(',', (string) env('DB_SNAPSHOT_SYNC_DENIED_ENVIRONMENTS', 'production'))))),
     ],
 
     /*

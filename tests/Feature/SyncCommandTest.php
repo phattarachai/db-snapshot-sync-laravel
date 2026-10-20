@@ -121,11 +121,64 @@ it('names a zstd download .sql.zst and sanitizes it in place, still zstd', funct
         ->toContain('CREATE TABLE foo');
 })->skip(fn (): bool => zstdMissing(), 'zstd not available');
 
-it('refuses to run outside the allowed environments', function (): void {
-    // Default testbench environment is "testing", which is not allowed by default.
+it('runs by default in any environment but production', function (string $env): void {
+    app()['env'] = $env;
+
+    // An unknown source fails right after the environment guard, so reaching it proves the guard passed.
+    $this->artisan('snapshot:sync', ['--source' => 'bogus'])
+        ->assertFailed()
+        ->expectsOutputToContain('Unknown or unconfigured');
+})->with(['local', 'staging', 'uat', 'testing']);
+
+it('refuses production by default', function (): void {
+    app()['env'] = 'production';
+
     $this->artisan('snapshot:sync')
         ->assertFailed()
-        ->expectsOutputToContain('snapshot:sync may only run in');
+        ->expectsOutputToContain('snapshot:sync may not run in: production.');
+});
+
+it('refuses the environments a project denies', function (): void {
+    config(['db-snapshot-sync.sync.denied_environments' => ['production', 'stag*']]);
+    app()['env'] = 'staging';
+
+    $this->artisan('snapshot:sync')
+        ->assertFailed()
+        ->expectsOutputToContain('snapshot:sync may not run in: production, stag*.');
+});
+
+it('lets an explicit allow-list decide alone', function (): void {
+    config(['db-snapshot-sync.sync.allowed_environments' => ['local', 'development']]);
+
+    $this->artisan('snapshot:sync')
+        ->assertFailed()
+        ->expectsOutputToContain('snapshot:sync may only run in: local, development.');
+
+    config(['db-snapshot-sync.sync.allowed_environments' => ['production']]);
+    app()['env'] = 'production';
+
+    $this->artisan('snapshot:sync', ['--source' => 'bogus'])
+        ->assertFailed()
+        ->expectsOutputToContain('Unknown or unconfigured');
+});
+
+it('reads both lists from comma-separated env vars', function (): void {
+    $sync = fn (): array => (require __DIR__.'/../../config/db-snapshot-sync.php')['sync'];
+
+    expect($sync())->toBe(['allowed_environments' => [], 'denied_environments' => ['production']]);
+
+    putenv('DB_SNAPSHOT_SYNC_ALLOWED_ENVIRONMENTS=local, staging');
+    putenv('DB_SNAPSHOT_SYNC_DENIED_ENVIRONMENTS=production,uat');
+
+    try {
+        expect($sync())->toBe([
+            'allowed_environments' => ['local', 'staging'],
+            'denied_environments' => ['production', 'uat'],
+        ]);
+    } finally {
+        putenv('DB_SNAPSHOT_SYNC_ALLOWED_ENVIRONMENTS');
+        putenv('DB_SNAPSHOT_SYNC_DENIED_ENVIRONMENTS');
+    }
 });
 
 it('errors on an unknown source', function (): void {
