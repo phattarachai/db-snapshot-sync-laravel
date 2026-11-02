@@ -48,6 +48,14 @@ source-side snippets you paste into `config/db-snapshots.php`, `config/filesyste
 `config/database.php` (dump exclusions) and the scheduler. It requires
 `spatie/laravel-db-snapshots` and a `snapshots` filesystem disk on **both** ends.
 
+### Laravel Boost
+
+The package ships a [Laravel Boost](https://github.com/laravel/boost) skill, `db-snapshot-sync`, and a
+one-paragraph guideline. Run `php artisan boost:install` (or `boost:update`) in the app, and its coding
+agent learns `snapshot:sync`, its options, the environment guard, source-side setup, troubleshooting,
+and to run `php artisan migrate` after a load. It then answers "pull the prod DB to local" without
+searching `php artisan list`.
+
 ## Commands
 
 - **`snapshot:sed {name?} {--latest} {--connection=} {--driver=}`** — sanitize a snapshot on the

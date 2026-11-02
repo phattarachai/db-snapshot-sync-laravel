@@ -7,6 +7,16 @@ Release notes are drafted automatically from merged pull requests and published 
 
 This file records anything released before that automation landed.
 
+## v1.5.0
+
+### Added
+
+- A Laravel Boost skill (`resources/boost/skills/db-snapshot-sync`) and guideline
+  (`resources/boost/guidelines/core.md`). After `boost:install`, an app's coding agent knows how to
+  pull production into the local database with `snapshot:sync`: each option, that the load replaces
+  the local database, the environment guard, `db-snapshot-sync:install`, the source-side setup, running
+  `php artisan migrate` afterwards, and troubleshooting.
+
 ## v1.4.0
 
 ### Changed
