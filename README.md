@@ -431,6 +431,10 @@ file's modified time when the name has none. A target's modified time is only th
 both. (A listener on their abstract parent class never fires: Laravel matches an event's interfaces,
 not its parent classes.)
 
+An empty or failed listing is read up to twice more, 5 seconds apart and through a freshly resolved
+disk, before the target counts as stale, because a transient failure on some adapters (Google Drive)
+reads as an empty folder. A copy that is simply old is reported straight away.
+
 | Event | When | Properties |
 |---|---|---|
 | `SnapshotBackupHealthy` | newest copy within `stale_after_hours` | `disk`, `newest`, `newestAt`, `ageSeconds`, `ageHours()`, `staleAfterHours` |

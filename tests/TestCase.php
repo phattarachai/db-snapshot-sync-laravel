@@ -5,11 +5,19 @@ declare(strict_types=1);
 namespace Phattarachai\DbSnapshotSyncLaravel\Tests;
 
 use Illuminate\Foundation\Application;
+use Illuminate\Support\Sleep;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Phattarachai\DbSnapshotSyncLaravel\DbSnapshotSyncServiceProvider;
 
 abstract class TestCase extends BaseTestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Sleep::fake();
+    }
+
     /**
      * @param  Application  $app
      * @return array<int, class-string>
