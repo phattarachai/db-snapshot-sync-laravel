@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Phattarachai\DbSnapshotSyncLaravel\Console;
 
 use Illuminate\Console\Command;
+use Illuminate\Console\Prohibitable;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -24,6 +25,8 @@ use Throwable;
  */
 class RestoreCommand extends Command
 {
+    use Prohibitable;
+
     protected $signature = 'snapshot:restore
         {name? : Snapshot name on the snapshots disk, with or without .sql / .sql.gz / .sql.zst}
         {--latest : Restore the newest snapshot instead of a named one}
@@ -36,6 +39,10 @@ class RestoreCommand extends Command
 
     public function handle(SnapshotRestorer $restorer): int
     {
+        if ($this->isProhibited()) {
+            return self::FAILURE;
+        }
+
         if (class_exists(Pulse::class)) {
             Pulse::stopRecording();
         }

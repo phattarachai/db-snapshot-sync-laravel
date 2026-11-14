@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Phattarachai\DbSnapshotSyncLaravel\Console;
 
 use Illuminate\Console\Command;
+use Illuminate\Console\Prohibitable;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -24,6 +25,8 @@ use Phattarachai\DbSnapshotSyncLaravel\Transfer\TransferFailed;
 
 class SyncCommand extends Command
 {
+    use Prohibitable;
+
     protected $signature = 'snapshot:sync
         {--fresh : Trigger a brand-new snapshot on the source before downloading (slow)}
         {--source=production : Source key from config db-snapshot-sync.sources (prod is an alias)}
@@ -35,6 +38,10 @@ class SyncCommand extends Command
 
     public function handle(SanitizerFactory $factory): int
     {
+        if ($this->isProhibited()) {
+            return self::FAILURE;
+        }
+
         if (class_exists(Pulse::class)) {
             Pulse::stopRecording();
         }

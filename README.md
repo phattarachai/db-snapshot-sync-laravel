@@ -266,6 +266,22 @@ and the rest as they were, never an empty database.
 (default `production`) it refuses unless that environment is also listed in
 `DB_SNAPSHOT_SYNC_RESTORE_ALLOWED_ENVIRONMENTS` on the box *and* `--force` is passed.
 
+**Prohibit them like `migrate:fresh`.** `snapshot:restore` and `snapshot:sync` use Laravel's
+`Prohibitable`, as `db:wipe` and `migrate:fresh` do. Prohibit them next to the app's own line:
+
+```php
+// AppServiceProvider::boot()
+DB::prohibitDestructiveCommands($this->app->isProduction());
+DbSnapshotSync::prohibitDestructiveCommands($this->app->isProduction());   // snapshot:restore + snapshot:sync
+// or one at a time: RestoreCommand::prohibit(...), SyncCommand::prohibit(...)
+```
+
+A prohibited command prints Laravel's "This command is prohibited from running in this environment."
+and stops before it touches anything. The package's guards apply on top and can't be switched off from
+code. `snapshot:sync` refuses `sync.denied_environments`, and `snapshot:restore` refuses
+`restore.denied_environments` unless the box lists itself in `DB_SNAPSHOT_SYNC_RESTORE_ALLOWED_ENVIRONMENTS`
+and `--force` is passed.
+
 | Option | Effect |
 |---|---|
 | `name` / `--latest` | A snapshot on the disk by name (with or without the extension), or the newest by the time in its name. Files in `backup.protect` (a committed baseline) are never picked. |
