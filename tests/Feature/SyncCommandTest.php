@@ -363,3 +363,127 @@ it('keeps a path on the source base URL', function () use ($pgDump): void {
 
     Http::assertSent(fn ($request): bool => $request->url() === 'https://source.test/api/internal/snapshots/latest');
 });
+
+/**
+ * Make `production` an ssh source served by tests/Fixtures/fake-ssh, which streams $payload.
+ *
+ * @param  array<string, mixed>  $behaviour  exit, stderr, meta ("ok", "none", "short")
+ * @return string the fake's working directory (argv.json lands there)
+ */
+function fakeSshSource(string $payload, array $behaviour = [], array $source = []): string
+{
+    $dir = sys_get_temp_dir().'/fake-ssh-'.bin2hex(random_bytes(4));
+    mkdir($dir);
+    file_put_contents("{$dir}/payload", $payload);
+    file_put_contents("{$dir}/behaviour.json", json_encode($behaviour));
+    putenv("FAKE_SSH_DIR={$dir}");
+
+    config([
+        'db-snapshot-sync.sync.allowed_environments' => ['testing'],
+        'db-snapshot-sync.token' => null,
+        'db-snapshot-sync.ssh.binary' => __DIR__.'/../Fixtures/fake-ssh',
+        'db-snapshot-sync.sources.production' => [
+            'ssh' => 'prod-box',
+            'path' => '/var/www/shop/current',
+            'run_as' => 'www-data',
+            ...$source,
+        ],
+    ]);
+
+    return $dir;
+}
+
+it('pulls over ssh with no token, verifies the transfer, then sanitizes and loads', function () use ($pgDump): void {
+    config(['db-snapshot-sync.sanitizer.pgsql.drop_prefixes' => ['\\restrict']]);
+    $disk = Storage::fake('snapshots');
+    $dir = fakeSshSource(gzencode($pgDump, 9));
+    Http::fake();
+    $load = fakePsqlLoad();
+
+    $this->artisan('snapshot:sync')
+        ->assertSuccessful()
+        ->expectsOutputToContain('Source: ssh prod-box:/var/www/shop/current (as www-data)')
+        ->expectsOutputToContain('source: Streaming payload…')
+        ->expectsOutputToContain('sha256 verified');
+
+    Http::assertNothingSent();
+
+    $argv = json_decode((string) file_get_contents("{$dir}/argv.json"), true);
+    expect($argv)->toContain('prod-box');
+    expect(end($argv))->toBe("cd '/var/www/shop/current' && 'sudo' '-n' '-u' 'www-data' 'env' 'HOME=/tmp' 'php' '-d' 'display_errors=stderr' 'artisan' 'snapshot:export' '--no-ansi' '--no-interaction'");
+
+    $files = $disk->files();
+    expect($files)->toHaveCount(1);
+    expect($files[0])->toEndWith('.sql.gz');
+    expect($load['path'])->toBe($disk->path($files[0]));
+    expect(gzdecode($disk->get($files[0])))->not->toContain('\\restrict');
+});
+
+it('asks the box for a fresh snapshot over ssh', function () use ($pgDump): void {
+    Storage::fake('snapshots');
+    $dir = fakeSshSource($pgDump);
+    fakePsqlLoad();
+
+    $this->artisan('snapshot:sync', ['--fresh' => true])->assertSuccessful();
+
+    $argv = json_decode((string) file_get_contents("{$dir}/argv.json"), true);
+    expect(end($argv))->toContain("'snapshot:export' '--fresh'");
+});
+
+it('deletes a short transfer and loads nothing', function (string $meta) use ($pgDump): void {
+    $disk = Storage::fake('snapshots');
+    fakeSshSource($pgDump, ['meta' => $meta]);
+    $load = fakePsqlLoad();
+
+    $this->artisan('snapshot:sync')->assertFailed();
+
+    expect($load->count())->toBe(0);
+    expect($disk->files())->toBe([]);
+})->with(['size mismatch' => 'short', 'no closing line' => 'none']);
+
+it('explains the ssh failures it can recognise', function (array $behaviour, string $message) use ($pgDump): void {
+    $disk = Storage::fake('snapshots');
+    fakeSshSource($pgDump, $behaviour);
+    $load = fakePsqlLoad();
+
+    $this->artisan('snapshot:sync')
+        ->assertFailed()
+        ->expectsOutputToContain($message);
+
+    expect($load->count())->toBe(0);
+    expect($disk->files())->toBe([]);
+})->with([
+    'no login' => [['exit' => 255, 'stderr' => 'Permission denied (publickey).'], 'ssh could not log in to [prod-box]'],
+    'no sudo rule' => [['exit' => 1, 'stderr' => 'sudo: a password is required'], 'cannot run artisan as [www-data] without a password'],
+    'old package on the box (artisan errors on stdout)' => [['exit' => 1, 'stdout' => '  ERROR  Command "snapshot:export" is not defined.'], 'Deploy ^1.6 there first'],
+    'export failed' => [['exit' => 1, 'stderr' => 'No snapshot on disk [snapshots].'], 'snapshot:export failed on [prod-box] (exit 1)'],
+]);
+
+it('refuses an ssh source without a path before connecting', function (): void {
+    Storage::fake('snapshots');
+    $dir = fakeSshSource('x', source: ['path' => null]);
+
+    $this->artisan('snapshot:sync')
+        ->assertFailed()
+        ->expectsOutputToContain('sets ssh [prod-box] but no path');
+
+    expect(file_exists("{$dir}/argv.json"))->toBeFalse();
+});
+
+it('prefers the ssh host over a url on the same source and warns on an HTTP-only one', function () use ($pgDump): void {
+    Storage::fake('snapshots');
+    fakeSshSource($pgDump, source: ['url' => 'https://source.test']);
+    Http::fake();
+    fakePsqlLoad();
+
+    $this->artisan('snapshot:sync')->assertSuccessful()->doesntExpectOutputToContain('deprecated');
+    Http::assertNothingSent();
+
+    config([
+        'db-snapshot-sync.token' => 'secret-token',
+        'db-snapshot-sync.sources.production' => ['ssh' => null, 'url' => 'https://source.test'],
+    ]);
+    Http::fake(['source.test/*' => Http::response($pgDump)]);
+
+    $this->artisan('snapshot:sync')->assertSuccessful()->expectsOutputToContain('deprecated and removed in 2.0');
+});

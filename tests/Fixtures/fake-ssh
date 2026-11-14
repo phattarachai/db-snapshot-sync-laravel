@@ -1,0 +1,36 @@
+#!/usr/bin/env php
+<?php
+
+// Stands in for the OpenSSH client in tests. Records its argv, then plays the box:
+// streams $FAKE_SSH_DIR/payload to stdout and the export's closing line to stderr.
+// $FAKE_SSH_DIR/behaviour.json may set: exit (int), stdout and stderr (string, written first), meta ("ok", "none", "short").
+
+$dir = (string) getenv('FAKE_SSH_DIR');
+file_put_contents("{$dir}/argv.json", json_encode(array_slice($argv, 1)));
+
+$behaviour = is_file("{$dir}/behaviour.json") ? json_decode((string) file_get_contents("{$dir}/behaviour.json"), true) : [];
+$payload = is_file("{$dir}/payload") ? (string) file_get_contents("{$dir}/payload") : '';
+
+if (($behaviour['stdout'] ?? '') !== '') {
+    fwrite(STDOUT, $behaviour['stdout']."\n");
+}
+
+if (($behaviour['stderr'] ?? '') !== '') {
+    fwrite(STDERR, $behaviour['stderr']."\n");
+}
+
+$exit = (int) ($behaviour['exit'] ?? 0);
+
+if ($exit === 0) {
+    fwrite(STDERR, "Streaming payload…\n");
+    fwrite(STDOUT, $payload);
+
+    $meta = $behaviour['meta'] ?? 'ok';
+    $size = $meta === 'short' ? strlen($payload) + 10 : strlen($payload);
+
+    if ($meta !== 'none') {
+        fwrite(STDERR, '[snapshot-export] '.json_encode(['name' => 'remote.sql.gz', 'size' => $size, 'sha256' => hash('sha256', $payload)])."\n");
+    }
+}
+
+exit($exit);

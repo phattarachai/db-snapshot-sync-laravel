@@ -44,39 +44,94 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Shared internal token
-    |--------------------------------------------------------------------------
-    | The bearer token the sync client sends and the internal API checks. Set a
-    | distinct random value per environment; the local .env holds the token of
-    | the source it syncs from (production by default).
-    */
-
-    'token' => env('INTERNAL_API_TOKEN'),
-
-    /*
-    |--------------------------------------------------------------------------
     | Sync sources
     |--------------------------------------------------------------------------
-    | Base URLs `snapshot:sync --source=<key>` can pull from. `prod` is an
+    | The boxes `snapshot:sync --source=<key>` can pull from. `prod` is an
     | accepted alias for `production`.
     |
-    | A source whose engine differs from the local default connection (e.g. a
-    | MySQL production synced into an app whose default is now pgsql) names
-    | the local connection to sanitize for and load into:
+    | The sync logs in over ssh with your own key and runs `php artisan
+    | snapshot:export` in the app's directory there, which streams the newest
+    | snapshot (or with --fresh a new one) back. Nothing listens on the box and
+    | no token exists: whoever can ssh in and run artisan as the app's user can
+    | pull, and those people can already read its .env and database.
     |
-    |   'production' => [
-    |       'url' => env('DB_SNAPSHOT_SYNC_PROD_URL'),
-    |       'connection' => 'mysql',
-    |   ],
+    |   ssh      The ~/.ssh/config Host alias you log in with (BatchMode: no
+    |            prompts, so keys or an agent).
+    |   path     The app's directory on the box (…/current in a release layout).
+    |   run_as   The app's user when you log in as someone else; artisan then
+    |            runs through `sudo -n -u <run_as>`, which needs a sudoers rule
+    |            (README: "SSH sources"). Leave null when you log in as it.
+    |   php      The PHP binary on the box (default `ssh.php` below).
+    |   wrapper  Instead of path + php: a root-owned script on the box that
+    |            runs artisan snapshot:export, for a sudoers rule that allows
+    |            only that script (README: "SSH sources").
+    |   ssh_options  Extra `-o` options, e.g. ['ProxyJump' => 'bastion'].
+    |   connection   The local connection to sanitize for and load into, when
+    |            it isn't the default one (a MySQL production synced into an
+    |            app whose default is now pgsql). `--connection` overrides it.
     |
-    | `--connection=<name>` overrides it per run. Without either, the default
-    | connection is used.
+    | None of these are secrets, so a project usually commits its hosts and
+    | paths here and keeps the env vars for a developer whose alias differs.
+    |
+    | Deprecated: a plain URL string, or a `url` key with no `ssh`, pulls through
+    | the HTTP API below with INTERNAL_API_TOKEN. Both are removed in 2.0.
     */
 
     'sources' => [
-        'production' => env('DB_SNAPSHOT_SYNC_PROD_URL'),
-        'uat' => env('DB_SNAPSHOT_SYNC_UAT_URL'),
+        'production' => [
+            'ssh' => env('DB_SNAPSHOT_SYNC_PROD_SSH'),
+            'path' => env('DB_SNAPSHOT_SYNC_PROD_PATH'),
+            'run_as' => env('DB_SNAPSHOT_SYNC_PROD_RUN_AS'),
+            'url' => env('DB_SNAPSHOT_SYNC_PROD_URL'),
+        ],
+        'uat' => [
+            'ssh' => env('DB_SNAPSHOT_SYNC_UAT_SSH'),
+            'path' => env('DB_SNAPSHOT_SYNC_UAT_PATH'),
+            'run_as' => env('DB_SNAPSHOT_SYNC_UAT_RUN_AS'),
+            'url' => env('DB_SNAPSHOT_SYNC_UAT_URL'),
+        ],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | ssh client
+    |--------------------------------------------------------------------------
+    | The OpenSSH client (macOS, Linux, WSL2 and Windows 10+ ship it), the
+    | options every pull passes, and the PHP binary a source runs artisan with
+    | unless it names its own.
+    */
+
+    'ssh' => [
+        'binary' => env('DB_SNAPSHOT_SYNC_SSH', 'ssh'),
+        'options' => [
+            'BatchMode' => 'yes',
+            'ConnectTimeout' => 15,
+            'ServerAliveInterval' => 15,
+            'ServerAliveCountMax' => 8,
+        ],
+        'php' => 'php',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Export (source side)
+    |--------------------------------------------------------------------------
+    | Filename fragments `snapshot:export` never sends (a schema-only baseline,
+    | or a MySQL .sanitized. intermediate). Match by substring, by name.
+    */
+
+    'export' => [
+        'reject' => ['.sanitized.'],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Shared internal token (deprecated)
+    |--------------------------------------------------------------------------
+    | Only HTTP sources use it. Removed in 2.0 with the internal API.
+    */
+
+    'token' => env('INTERNAL_API_TOKEN'),
 
     /*
     |--------------------------------------------------------------------------
@@ -96,7 +151,7 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Source TLS verification
+    | Source TLS verification (HTTP sources, deprecated)
     |--------------------------------------------------------------------------
     | Some edges serve an incomplete certificate chain (they present the leaf
     | but omit an intermediate). A browser or system `curl` papers over this by
@@ -231,10 +286,12 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Internal snapshot API (source side)
+    | Internal snapshot API (source side, deprecated)
     |--------------------------------------------------------------------------
-    | The endpoints `snapshot:sync` calls on the source server. Enable only on
-    | machines that should serve snapshots (production / UAT), not consumers.
+    | The HTTP endpoints an HTTP source calls, guarded by one shared token. SSH
+    | sources need none of it: keep `enabled` false (the default) and leave
+    | DB_SNAPSHOT_SYNC_API unset once every consumer pulls over ssh. Removed in
+    | 2.0. `reject` here also applies to `snapshot:export`.
     */
 
     'api' => [
