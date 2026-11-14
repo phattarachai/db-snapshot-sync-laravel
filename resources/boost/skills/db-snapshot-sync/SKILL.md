@@ -1,6 +1,6 @@
 ---
 name: db-snapshot-sync
-description: 'Pull a production (or UAT) database down into the local database with `php artisan snapshot:sync` from phattarachai/db-snapshot-sync-laravel, over ssh: options, what it overwrites, the environment guard, ssh source setup, moving off the deprecated HTTP API, and troubleshooting. Use when asked to "pull the prod DB to local", "refresh local data", "copy production data down", "sync the database", "load a production snapshot", "ดึง DB production ลงมา", "dump production ลงมา", "ดึงข้อมูลจริงมาลง local", "อัปเดตข้อมูล local ให้ตรงกับ prod", when setting up snapshot:sync or snapshot:export, or when snapshot:sync fails.'
+description: 'Pull a production (or UAT) database down into the local database with `php artisan snapshot:sync` from phattarachai/db-snapshot-sync-laravel, over ssh, and restore a snapshot safely with `snapshot:restore` (never spatie''s `snapshot:load`): options, what they overwrite, the environment guards, ssh source setup, moving off the deprecated HTTP API, and troubleshooting. Use when asked to "pull the prod DB to local", "restore a snapshot", "roll back the database", "refresh local data", "copy production data down", "sync the database", "load a production snapshot", "ดึง DB production ลงมา", "dump production ลงมา", "ดึงข้อมูลจริงมาลง local", "อัปเดตข้อมูล local ให้ตรงกับ prod", when setting up snapshot:sync or snapshot:export, or when snapshot:sync fails.'
 ---
 
 # DB Snapshot Sync
@@ -39,9 +39,33 @@ php artisan migrate                  # then apply migrations newer than the snap
 | `--keep-raw` | Keep the raw download when the sanitizer writes a separate file (MySQL writes `.sanitized.sql.gz`; Postgres sanitizes in place). |
 | `--connection=<name>` | Local connection to sanitize for and load into. Default: the source's `connection` in config, else `database.default`. Needed when the source's engine differs from the local default (e.g. MySQL prod, pgsql local). |
 
-PostgreSQL loads through `psql` in one transaction (needs the client installed; set
-`DB_SNAPSHOT_SYNC_PSQL` if it is not on `PATH`). MySQL/MariaDB goes through spatie's
-`snapshot:load --drop-tables --force --stream`. A `.sql.zst` snapshot needs the `zstd` CLI locally.
+The load is the same as `snapshot:restore` below: PostgreSQL through `psql` in one transaction,
+MySQL/MariaDB through the `mysql` client (set `DB_SNAPSHOT_SYNC_PSQL` / `DB_SNAPSHOT_SYNC_MYSQL` if
+the client is not on `PATH`). A `.sql.zst` snapshot needs the `zstd` CLI locally.
+
+## Restore a snapshot that is already on the disk
+
+```bash
+php artisan snapshot:restore --latest                 # newest by the time in its name; asks first
+php artisan snapshot:restore 2026-11-14_04-00-01 --force
+```
+
+**Use this, never spatie's `snapshot:load`, on any machine and any box.** `snapshot:load` (default
+mode) drops every table, then reads the whole dump into one PHP string: a large dump runs out of
+memory (or the error tracker's SQL breadcrumb does) and leaves the database empty.
+
+- PostgreSQL: streamed into `psql` in one transaction. The old objects (tables, views, sequences,
+  types, functions; never extensions) are dropped inside it, so a failure or a truncated file
+  leaves the database as it was. `COMMENT ON EXTENSION` lines are skipped. `--role=<owner>` runs
+  `SET ROLE` first so restored objects belong to the app's role. A `pg_dump -Fc` archive is refused
+  (that needs pg_restore).
+- MySQL/MariaDB: streamed into `mysql`; tables are replaced one by one (DDL commits, so a failure
+  part-way is partial but never empty), and tables the dump lacks are dropped afterwards.
+- `--connection=`, `--keep-tables` (don't drop first), `--force` (no prompt).
+- **Protected environments** (`restore.denied_environments`, default production) refuse unless the
+  box lists itself in `DB_SNAPSHOT_SYNC_RESTORE_ALLOWED_ENVIRONMENTS` **and** `--force` is passed.
+  Don't set that variable to get past the guard unless the user asked for a production restore.
+- Run `php artisan migrate` afterwards when the code is newer than the snapshot.
 
 ## Where it may run
 
@@ -115,6 +139,9 @@ with `INTERNAL_API_TOKEN` and prints a deprecation warning. To move a project:
 | `… is a MySQL dump, but connection [x] uses the pgsql driver` | Engine mismatch; nothing was loaded. Pass `--connection=<matching connection>` or set the source's `connection`. |
 | Load fails on a new dump-tool line (`\restrict`, `DEFINER=`, …) | Add a rule under `sanitizer` in `config/db-snapshot-sync.php`; re-sanitize a file on disk with `php artisan snapshot:sed --latest`. |
 | App errors on missing columns/tables after a sync | Run `php artisan migrate`. |
+| `[production] is protected` from `snapshot:restore` | By design. Only on the user's request: list the env in `DB_SNAPSHOT_SYNC_RESTORE_ALLOWED_ENVIRONMENTS` on that box, then `--force`. |
+| `must be owner of …` during a restore | The connection's user doesn't own the existing objects. Restore as the owner, or pass `--role=<owner>` if the user is a member of it. |
+| `… is a pg_dump custom-format archive` | A `-Fc` file: restore it with `pg_restore --single-transaction --no-owner`. |
 
-The package's README has the full reference (ssh sources, cross-engine sync, zstd, off-site backup
+The package's README has the full reference (ssh sources, safe restore, cross-engine sync, zstd, off-site backup
 with `snapshot:backup`/`prune`/`backup-check`/`drill`).

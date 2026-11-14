@@ -17,11 +17,10 @@ use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\Sanitizer;
 use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\SanitizerFactory;
 use Phattarachai\DbSnapshotSyncLaravel\Support\CaBundle;
 use Phattarachai\DbSnapshotSyncLaravel\Support\DumpEngine;
-use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
+use Phattarachai\DbSnapshotSyncLaravel\Support\SnapshotRestorer;
 use Phattarachai\DbSnapshotSyncLaravel\Transfer\SshPuller;
 use Phattarachai\DbSnapshotSyncLaravel\Transfer\SshSource;
 use Phattarachai\DbSnapshotSyncLaravel\Transfer\TransferFailed;
-use RuntimeException;
 
 class SyncCommand extends Command
 {
@@ -222,7 +221,7 @@ class SyncCommand extends Command
 
     /**
      * Refuse a dump written by the other engine before it is sanitized or loaded:
-     * snapshot:load drops every table on the target first and only then fails on
+     * the load drops every table on the target first and only then fails on
      * the foreign SQL. A dump whose header names neither engine is let through.
      */
     private function engineMatches(string $downloaded, string $connection, string $driver): bool
@@ -279,7 +278,7 @@ class SyncCommand extends Command
     /**
      * The source may send a gzip (.sql.gz), zstd (.sql.zst) or plain (.sql)
      * dump. Name the local file by the payload's real type — sniffed from its
-     * magic bytes — so the sanitizer and snapshot:load agree with the content
+     * magic bytes — so the sanitizer and the loader agree with the content
      * instead of a guessed extension.
      */
     private function nameByContent(string $rawName): string
@@ -302,54 +301,18 @@ class SyncCommand extends Command
 
     private function loadIntoLocalDb(string $name, string $connection, string $driver): void
     {
-        $this->info("Loading into local DB [{$connection}]...");
+        $this->info("Loading into local DB [{$connection}] ({$driver})...");
 
-        $flags = (array) config('db-snapshot-sync.load', []);
+        $path = Storage::disk((string) config('db-snapshot-sync.disk'))->path($name);
         $default = DB::getDefaultConnection();
 
         try {
-            $driver === 'pgsql'
-                ? $this->loadWithPsql($name, $connection, (bool) ($flags['drop-tables'] ?? true))
-                : $this->loadWithSnapshotLoad($name, $connection, $flags);
+            app(SnapshotRestorer::class)->restore($path, $connection, (bool) config('db-snapshot-sync.load.drop-tables', true));
         } finally {
-            // spatie's Snapshot::load() makes the target the default connection and
-            // never switches back, and a pg_dump leaves search_path = '' on the pooled
-            // connection. Restore both so a caller running snapshot:sync in-process
-            // (e.g. from another command) keeps its own default and a clean session.
+            // A pg_dump leaves search_path = '' on a pooled session: start the
+            // caller (e.g. a command running snapshot:sync in-process) afresh.
             DB::setDefaultConnection($default);
             DB::purge($connection);
-        }
-    }
-
-    /**
-     * pg_dump output goes through psql, not spatie's PHP statement splitter, which
-     * mis-reads a backslash before a quote and silently drops the rest of the dump.
-     */
-    private function loadWithPsql(string $name, string $connection, bool $dropTables): void
-    {
-        $path = Storage::disk((string) config('db-snapshot-sync.disk'))->path($name);
-
-        app(PsqlLoader::class)->load($path, $connection, $dropTables);
-    }
-
-    /**
-     * @param  array<array-key, mixed>  $flags
-     */
-    private function loadWithSnapshotLoad(string $name, string $connection, array $flags): void
-    {
-        $arguments = [
-            'name' => Compression::stem($name),
-            '--connection' => $connection,
-        ];
-
-        foreach ($flags as $flag => $enabled) {
-            if ($enabled) {
-                $arguments["--{$flag}"] = true;
-            }
-        }
-
-        if ($this->call('snapshot:load', $arguments) !== self::SUCCESS) {
-            throw new RuntimeException('snapshot:load failed.');
         }
     }
 

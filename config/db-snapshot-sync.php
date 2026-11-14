@@ -215,32 +215,46 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Load flags
+    | Loading and restoring
     |--------------------------------------------------------------------------
-    | MySQL/MariaDB: passed through to spatie's snapshot:load. --stream is
-    | required for any non-trivial dump (avoids loading the whole file into
-    | memory).
+    | `snapshot:sync` and `snapshot:restore` load a dump the same way, streamed
+    | through the engine's own client and never read whole into PHP:
     |
-    | PostgreSQL: loaded with psql (see `psql` below), not snapshot:load —
-    | spatie's PHP statement splitter mis-reads backslashes in pg_dump string
-    | literals and silently drops everything after one. Only drop-tables applies.
+    | PostgreSQL: psql, in one transaction that first drops every object of the
+    | connection's schemas no extension owns, so a failure leaves the database as
+    | it was. `COMMENT ON EXTENSION` lines (owner-only) and the sanitizer's
+    | `drop_prefixes` are skipped on the way in.
+    |
+    | MySQL/MariaDB: the mysql client. mysqldump replaces each table itself; the
+    | tables it doesn't create are dropped after it loaded. MySQL commits DDL, so
+    | a failure part-way leaves the tables before it replaced.
+    |
+    | `drop-tables` false keeps existing objects (`--keep-tables` per restore).
+    | `psql` and `mysql` are the client binaries.
     */
 
     'load' => [
         'drop-tables' => true,
-        'force' => true,
-        'stream' => true,
     ],
+
+    'psql' => env('DB_SNAPSHOT_SYNC_PSQL', 'psql'),
+
+    'mysql' => env('DB_SNAPSHOT_SYNC_MYSQL', 'mysql'),
 
     /*
     |--------------------------------------------------------------------------
-    | psql binary
+    | Where `snapshot:restore` may run
     |--------------------------------------------------------------------------
-    | The client a PostgreSQL snapshot is loaded with. Any error, or a dump cut
-    | short, exits non-zero and rolls the load back.
+    | Anywhere it asks first (or takes --force). In `denied_environments`
+    | (default production) it refuses unless the environment is also listed in
+    | `allowed_environments` AND --force is passed: a setting someone puts on
+    | that box on purpose, then a flag on the run. Comma-separated env vars.
     */
 
-    'psql' => env('DB_SNAPSHOT_SYNC_PSQL', 'psql'),
+    'restore' => [
+        'allowed_environments' => array_values(array_filter(array_map('trim', explode(',', (string) env('DB_SNAPSHOT_SYNC_RESTORE_ALLOWED_ENVIRONMENTS', ''))))),
+        'denied_environments' => array_values(array_filter(array_map('trim', explode(',', (string) env('DB_SNAPSHOT_SYNC_RESTORE_DENIED_ENVIRONMENTS', 'production'))))),
+    ],
 
     /*
     |--------------------------------------------------------------------------
