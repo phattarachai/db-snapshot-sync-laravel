@@ -65,6 +65,10 @@ memory (or the error tracker's SQL breadcrumb does) and leaves the database empt
 - **Protected environments** (`restore.denied_environments`, default production) refuse unless the
   box lists itself in `DB_SNAPSHOT_SYNC_RESTORE_ALLOWED_ENVIRONMENTS` **and** `--force` is passed.
   Don't set that variable to get past the guard unless the user asked for a production restore.
+- **Prohibitable, like `migrate:fresh`.** Apps prohibit both destructive commands beside
+  `DB::prohibitDestructiveCommands(...)` with `DbSnapshotSync::prohibitDestructiveCommands($this->app->isProduction())`
+  (or `RestoreCommand::prohibit(...)` / `SyncCommand::prohibit(...)`). "This command is prohibited from
+  running in this environment." means the app did that on purpose: don't work around it.
 - Run `php artisan migrate` afterwards when the code is newer than the snapshot.
 
 ## Where it may run
@@ -139,6 +143,7 @@ with `INTERNAL_API_TOKEN` and prints a deprecation warning. To move a project:
 | `… is a MySQL dump, but connection [x] uses the pgsql driver` | Engine mismatch; nothing was loaded. Pass `--connection=<matching connection>` or set the source's `connection`. |
 | Load fails on a new dump-tool line (`\restrict`, `DEFINER=`, …) | Add a rule under `sanitizer` in `config/db-snapshot-sync.php`; re-sanitize a file on disk with `php artisan snapshot:sed --latest`. |
 | App errors on missing columns/tables after a sync | Run `php artisan migrate`. |
+| `This command is prohibited from running in this environment.` | The app prohibits it (`DbSnapshotSync::prohibitDestructiveCommands`) in this environment. By design; ask the user. |
 | `[production] is protected` from `snapshot:restore` | By design. Only on the user's request: list the env in `DB_SNAPSHOT_SYNC_RESTORE_ALLOWED_ENVIRONMENTS` on that box, then `--force`. |
 | `must be owner of …` during a restore | The connection's user doesn't own the existing objects. Restore as the owner, or pass `--role=<owner>` if the user is a member of it. |
 | `… is a pg_dump custom-format archive` | A `-Fc` file: restore it with `pg_restore --single-transaction --no-owner`. |

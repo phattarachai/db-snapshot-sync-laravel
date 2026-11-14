@@ -7,6 +7,7 @@ namespace Phattarachai\DbSnapshotSyncLaravel\Tests;
 use Illuminate\Foundation\Application;
 use Illuminate\Support\Sleep;
 use Orchestra\Testbench\TestCase as BaseTestCase;
+use Phattarachai\DbSnapshotSyncLaravel\DbSnapshotSync;
 use Phattarachai\DbSnapshotSyncLaravel\DbSnapshotSyncServiceProvider;
 
 abstract class TestCase extends BaseTestCase
@@ -16,6 +17,7 @@ abstract class TestCase extends BaseTestCase
         parent::setUp();
 
         Sleep::fake();
+        DbSnapshotSync::prohibitDestructiveCommands(false);
     }
 
     /**

@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Storage;
+use Phattarachai\DbSnapshotSyncLaravel\Console\RestoreCommand;
+use Phattarachai\DbSnapshotSyncLaravel\DbSnapshotSync;
 use Phattarachai\DbSnapshotSyncLaravel\Support\SnapshotRestorer;
 
 $pgDump = "--\n-- PostgreSQL database dump\n--\nCREATE TABLE foo (id int);\n";
@@ -91,4 +93,28 @@ it('names an unknown snapshot and lists the newest', function (): void {
         ->expectsOutputToContain('No snapshot named [nope]')
         ->expectsOutputToContain('Newest: 2026-11-14_04-00-01.sql.gz, 2026-11-13_04-00-01.sql.gz')
         ->assertFailed();
+});
+
+it('obeys the app\'s prohibit, before any guard or prompt', function (Closure $prohibit): void {
+    $prohibit();
+
+    $this->artisan('snapshot:restore', ['--latest' => true, '--force' => true])
+        ->expectsOutputToContain('This command is prohibited from running in this environment.')
+        ->assertFailed();
+
+    expect($this->calls)->toHaveCount(0);
+})->with([
+    'the command' => [fn () => RestoreCommand::prohibit()],
+    'the package helper' => [fn () => DbSnapshotSync::prohibitDestructiveCommands()],
+]);
+
+it('keeps the production guard when the app allows the command', function (): void {
+    app()->detectEnvironment(fn (): string => 'production');
+    RestoreCommand::prohibit(false);
+
+    $this->artisan('snapshot:restore', ['--latest' => true, '--force' => true])
+        ->expectsOutputToContain('[production] is protected')
+        ->assertFailed();
+
+    expect($this->calls)->toHaveCount(0);
 });

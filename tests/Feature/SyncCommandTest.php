@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Phattarachai\DbSnapshotSyncLaravel\DbSnapshotSync;
 use Phattarachai\DbSnapshotSyncLaravel\Support\MysqlLoader;
 use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
 
@@ -492,4 +493,16 @@ it('prefers the ssh host over a url on the same source and warns on an HTTP-only
     Http::fake(['source.test/*' => Http::response($pgDump)]);
 
     $this->artisan('snapshot:sync')->assertSuccessful()->expectsOutputToContain('deprecated and removed in 2.0');
+});
+
+it('obeys the package-wide prohibit before downloading anything', function (): void {
+    config(['db-snapshot-sync.sync.allowed_environments' => ['testing']]);
+    Http::fake();
+    DbSnapshotSync::prohibitDestructiveCommands();
+
+    $this->artisan('snapshot:sync')
+        ->expectsOutputToContain('This command is prohibited from running in this environment.')
+        ->assertFailed();
+
+    Http::assertNothingSent();
 });
