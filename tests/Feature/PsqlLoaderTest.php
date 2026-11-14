@@ -167,3 +167,66 @@ it('names a missing psql binary', function (): void {
     expect(fn () => (new PsqlLoader('no-such-psql'))->load($this->dumpPath, 'pgsql'))
         ->toThrow(RuntimeException::class, '[no-such-psql] was not found');
 });
+
+/**
+ * A dump that recreates objects of every kind the drop has to clear first.
+ */
+function pgDumpWithEveryKind(): string
+{
+    return implode("\n", [
+        '--',
+        '-- PostgreSQL database dump',
+        '--',
+        'CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;',
+        "COMMENT ON EXTENSION pg_trgm IS 'only the extension owner may run this';",
+        "CREATE TYPE public.mood AS ENUM ('happy', 'sad');",
+        'CREATE FUNCTION public.answer() RETURNS integer LANGUAGE sql AS $$ SELECT 42 $$;',
+        'CREATE SEQUENCE public.standalone_seq;',
+        'CREATE TABLE public.people (id bigint NOT NULL, mood public.mood);',
+        'CREATE VIEW public.happy_people AS SELECT id FROM public.people WHERE mood = \'happy\';',
+        "INSERT INTO public.people VALUES (1, 'happy'), (2, 'sad');",
+        '',
+        '--',
+        '-- PostgreSQL database dump complete',
+        '--',
+        '',
+    ]);
+}
+
+it('restores over a database that already holds the same views, types, sequences and functions, keeping extensions', function (): void {
+    file_put_contents($this->dumpPath, pgDumpWithEveryKind());
+
+    (new PsqlLoader)->load($this->dumpPath, 'pgsql');
+    DB::purge('pgsql');
+    (new PsqlLoader)->load($this->dumpPath, 'pgsql');
+    DB::purge('pgsql');
+
+    $db = DB::connection('pgsql');
+    expect($db->table('happy_people')->pluck('id')->all())->toBe([1])
+        ->and($db->selectOne('select public.answer() as answer')->answer)->toBe(42)
+        ->and($db->selectOne("select count(*) as n from pg_extension where extname = 'pg_trgm'")->n)->toBe(1)
+        ->and($db->getSchemaBuilder()->hasTable('existing'))->toBeFalse();
+});
+
+it('skips COMMENT ON EXTENSION, which a non-owner may not run', function (): void {
+    DB::connection('pgsql')->statement('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+    DB::connection('pgsql')->statement("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'restore_owner') THEN CREATE ROLE restore_owner; END IF; END $$");
+    DB::connection('pgsql')->statement('GRANT ALL ON SCHEMA public TO restore_owner');
+    DB::connection('pgsql')->statement('GRANT restore_owner TO CURRENT_USER');
+    file_put_contents($this->dumpPath, pgDumpWithEveryKind());
+
+    (new PsqlLoader)->load($this->dumpPath, 'pgsql', role: 'restore_owner');
+    DB::purge('pgsql');
+
+    expect(DB::connection('pgsql')->selectOne("select tableowner from pg_tables where tablename = 'people'")->tableowner)->toBe('restore_owner');
+});
+
+it('refuses a custom-format archive before touching the database', function (): void {
+    file_put_contents($this->dumpPath, "PGDMP\x01\x0f\x00 custom format bytes");
+
+    expect(fn () => (new PsqlLoader)->load($this->dumpPath, 'pgsql'))
+        ->toThrow(RuntimeException::class, 'custom-format archive');
+    DB::purge('pgsql');
+
+    expect(DB::connection('pgsql')->table('existing')->value('name'))->toBe('before-the-load');
+});

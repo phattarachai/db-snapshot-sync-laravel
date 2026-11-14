@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Phattarachai\DbSnapshotSyncLaravel\Support\MysqlLoader;
 use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
 
 $dump = "\\restrict abc\nSET transaction_timeout = 0;\nCREATE TABLE foo (id int);\n";
@@ -13,22 +13,28 @@ $pgDump = "--\n-- PostgreSQL database dump\n--\n\\restrict abc\nCREATE TABLE foo
 $mysqlDump = "-- MySQL dump 10.13  Distrib 8.0.36, for Linux (x86_64)\n/*!50013 DEFINER=`root`@`%` SQL SECURITY DEFINER */\nCREATE TABLE bar (id int);\n";
 
 /**
- * Stand in for spatie's snapshot:load (its provider isn't booted here) with the
- * same signature and the same side effect: Snapshot::load() makes the target
- * the default connection and never switches back.
+ * Stand in for the mysql client loader a mysql/mariadb target uses.
  *
- * @return ArrayObject<string, mixed> the options the sync passed, once it runs
+ * @return ArrayObject<string, mixed> the arguments the sync passed, once it runs
  */
-function fakeSnapshotLoad(): ArrayObject
+function fakeMysqlLoad(): ArrayObject
 {
     $calls = new ArrayObject;
 
-    Artisan::command('snapshot:load {name?} {--connection=} {--force} {--stream} {--drop-tables=1}', function () use ($calls): void {
-        $calls['name'] = $this->argument('name');
-        $calls['connection'] = $this->option('connection');
-        $calls['drop-tables'] = $this->option('drop-tables');
+    app()->instance(MysqlLoader::class, new class($calls) extends MysqlLoader
+    {
+        /** @param ArrayObject<string, mixed> $calls */
+        public function __construct(private readonly ArrayObject $calls)
+        {
+            parent::__construct();
+        }
 
-        DB::setDefaultConnection((string) $this->option('connection'));
+        public function load(string $path, string $connection, bool $dropTables = true): void
+        {
+            $this->calls['path'] = $path;
+            $this->calls['connection'] = $connection;
+            $this->calls['drop-tables'] = $dropTables;
+        }
     });
 
     return $calls;
@@ -51,7 +57,7 @@ function fakePsqlLoad(?Throwable $failWith = null): ArrayObject
             parent::__construct();
         }
 
-        public function load(string $path, string $connection, bool $dropTables = true): void
+        public function load(string $path, string $connection, bool $dropTables = true, ?string $role = null): void
         {
             $this->calls['path'] = $path;
             $this->calls['connection'] = $connection;
@@ -222,12 +228,12 @@ it('loads into the target connection and restores the caller\'s default connecti
     config(['db-snapshot-sync.sync.allowed_environments' => ['testing']]);
     Storage::fake('snapshots');
     Http::fake(['source.test/*' => Http::response(gzencode($mysqlDump, 9))]);
-    $load = fakeSnapshotLoad();
+    $load = fakeMysqlLoad();
 
     $this->artisan('snapshot:sync', ['--connection' => 'mysql'])->assertSuccessful();
 
     expect($load['connection'])->toBe('mysql');
-    expect($load['name'])->toEndWith('.sanitized');
+    expect($load['path'])->toEndWith('.sanitized.sql.gz');
     expect(DB::getDefaultConnection())->toBe('pgsql');
 })->skip(fn (): bool => ! shell_exec('command -v sed'), 'sed not available');
 
@@ -238,7 +244,7 @@ it('takes the target connection from an array-form source', function () use ($my
     ]);
     Storage::fake('snapshots');
     Http::fake(['source.test/*' => Http::response(gzencode($mysqlDump, 9))]);
-    $load = fakeSnapshotLoad();
+    $load = fakeMysqlLoad();
 
     $this->artisan('snapshot:sync')->assertSuccessful();
 
@@ -267,7 +273,7 @@ it('keeps a PG to PG sync on the default connection, sanitized in place', functi
     ]);
     $disk = Storage::fake('snapshots');
     Http::fake(['source.test/*' => Http::response(gzencode($pgDump, 9))]);
-    $snapshotLoad = fakeSnapshotLoad();
+    $snapshotLoad = fakeMysqlLoad();
     $load = fakePsqlLoad();
 
     $this->artisan('snapshot:sync')
@@ -316,7 +322,7 @@ it('refuses a MySQL dump bound for a pgsql connection without sanitizing or load
     config(['db-snapshot-sync.sync.allowed_environments' => ['testing']]);
     $disk = Storage::fake('snapshots');
     Http::fake(['source.test/*' => Http::response(gzencode($mysqlDump, 9))]);
-    $load = fakeSnapshotLoad();
+    $load = fakeMysqlLoad();
 
     $this->artisan('snapshot:sync')
         ->assertFailed()
@@ -331,7 +337,7 @@ it('refuses a pg_dump bound for a mysql connection', function () use ($pgDump): 
     config(['db-snapshot-sync.sync.allowed_environments' => ['testing']]);
     Storage::fake('snapshots');
     Http::fake(['source.test/*' => Http::response($pgDump)]);
-    $load = fakeSnapshotLoad();
+    $load = fakeMysqlLoad();
 
     $this->artisan('snapshot:sync', ['--connection' => 'mysql'])
         ->assertFailed()

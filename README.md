@@ -20,7 +20,7 @@ snapshot:sync --fresh
   → the .sql.gz (or .sql.zst) streams back over ssh, checked against its size and sha256
   → snapshot:sed  (strip directives that reject on a local client)
   → load: psql, in one transaction (PostgreSQL)
-          snapshot:load --drop-tables --force --stream (MySQL/MariaDB)
+          the mysql client, streamed (MySQL/MariaDB)
 ```
 
 Supports **PostgreSQL** and **MySQL/MariaDB**.
@@ -74,6 +74,9 @@ searching `php artisan list`.
   stdout, and its size and sha256 to stderr. It refuses to write to a terminal. `--disk` and
   `--pattern` (a glob on the file name) stream from another disk, e.g. an app's own dump format.
 
+- **`snapshot:restore {name?} {--latest} {--connection=} {--role=} {--keep-tables} {--force}`** —
+  restore a snapshot from the disk safely: streamed through psql in one transaction (or the mysql
+  client), never read whole into memory. See [Restoring a snapshot safely](#restoring-a-snapshot-safely).
 - **`snapshot:backup`**, **`snapshot:prune {--days=} {--dry-run}`**, **`snapshot:backup-check`**,
   **`snapshot:drill {--disk=} {--connection=}`**: off-site backup, local retention, staleness
   check and restore drill. See [Off-site backup & retention](#off-site-backup--retention).
@@ -110,33 +113,20 @@ or once, on the source in `config/db-snapshot-sync.php` (the plain-string form k
 
 `--connection` wins over the source's `connection`, which wins over `database.default`. The
 connection's driver picks the sanitizer (so a MySQL dump gets its `DEFINER=` lines stripped even
-when the default is `pgsql`), and the name is passed to `snapshot:load --connection`.
+when the default is `pgsql`), and the dump is loaded into that connection.
 
 **Engine guard.** Before sanitizing, the sync reads the dump's header (`-- MySQL dump` /
 `-- MariaDB dump` vs `-- PostgreSQL database dump`, plain, gzip or zstd). If it names a different engine
 from the target connection's driver, the sync stops with an error — nothing is sanitized or
-loaded, and the download stays on the disk. Without this, `snapshot:load --drop-tables` would
-drop every table on the wrong database first and only then fail on the foreign SQL. A dump whose
+loaded, and the download stays on the disk. Without this, the load would drop every table on the
+wrong database first and only then fail on the foreign SQL. A dump whose
 header names neither engine is let through. `snapshot:sed --connection`/`--driver` applies the
 same check.
 
-**Loading into a non-default connection in-process.** spatie's `Snapshot::load($connection)` calls
-`DB::setDefaultConnection($connection)` and never restores it, and a `pg_dump` leaves
-`search_path = ''` on the connection it ran through. `snapshot:sync` puts the caller's default
-connection back and purges the target connection after the load, so a command that calls
-`snapshot:sync` and then keeps querying sees its own default and a fresh session. If you call
-spatie's `snapshot:load --connection=…` directly, do the same:
-
-```php
-$default = DB::getDefaultConnection();
-
-try {
-    Artisan::call('snapshot:load', ['name' => $name, '--connection' => 'mysql', '--stream' => true, '--force' => true]);
-} finally {
-    DB::setDefaultConnection($default);
-    DB::purge('mysql');
-}
-```
+**Loading into a non-default connection in-process.** A `pg_dump` leaves `search_path = ''` on the
+session it ran through, so `snapshot:sync` and `snapshot:restore` purge the target connection after
+the load, and `snapshot:sync` puts the caller's default connection back. A command that calls either
+and keeps querying sees its own default and a fresh session.
 
 The source side is unchanged: `snapshot:export --fresh` dumps the source app's own default connection.
 
@@ -230,25 +220,62 @@ through it and prints a deprecation warning. Set `DB_SNAPSHOT_SYNC_API=true` (an
 otherwise; the routes carry `throttle:5,1`. The consumer sends the matching token from its `.env`.
 A source URL is a base URL, so it may carry a path (`'url' => 'https://example.com/api'`).
 
-## How a PostgreSQL snapshot is loaded
+## Restoring a snapshot safely
 
-A pgsql target is loaded with **`psql`**, not spatie's `snapshot:load`. spatie splits the dump into
-statements in PHP and treats a backslash inside a `'…'` literal as an escape, but `pg_dump` writes
-with `standard_conforming_strings = on`, where a backslash is literal. A value such as `I\'ve`
-(dumped as `'I\''ve'`) throws its quote tracking off. Everything after it folds into one trailing
-statement that never ends in `;`, and spatie discards that without an error. The load then reports
-success with every later table empty.
+```bash
+php artisan snapshot:restore --latest            # newest snapshot on the disk, asks first
+php artisan snapshot:restore 2026-11-14_04-00-01 --force
+php artisan snapshot:restore --latest --connection=mysql --keep-tables
+```
 
-`psql` is pg_dump's own parser. `snapshot:sync` streams the dump into it with `ON_ERROR_STOP=1`,
-inside one transaction that holds both the table drop and the restore. `COMMIT` is sent only after
-the whole file has been read and it ends with pg_dump's `-- PostgreSQL database dump complete`
-trailer. A failed statement, a read error or a truncated download therefore exits non-zero and rolls
-back to the database as it was. Connection settings reach psql as `PG*` environment variables, so the
-password never appears in the process list.
+`snapshot:restore` loads a snapshot from the snapshots disk into a connection, and `snapshot:sync`'s
+load step uses the same code. Use it instead of spatie's `snapshot:load`. That command's default mode
+drops every table first, then reads the whole dump into one PHP string and runs it as one statement.
+A few hundred MB of `--inserts` dump runs out of memory, or an error tracker serialising that statement
+as an SQL breadcrumb does, and the database is left empty.
 
-This needs the PostgreSQL client on the machine running the sync. Set `DB_SNAPSHOT_SYNC_PSQL` when
-`psql` is not on `PATH` (e.g. `/opt/homebrew/opt/libpq/bin/psql`). Of the `load` flags, only
-`drop-tables` applies to a pgsql load. MySQL/MariaDB still goes through `snapshot:load`.
+**PostgreSQL** goes through **`psql`**, pg_dump's own parser, in one transaction:
+- It first drops every object of the connection's schemas that no extension owns: tables, views,
+  sequences, types and functions. A dump therefore restores over a database that already holds them.
+- Then it sends the dump with `ON_ERROR_STOP=1`. `COMMIT` is sent only after the whole file has been
+  read and it ends with pg_dump's `-- PostgreSQL database dump complete` trailer.
+- A failed statement, a read error or a truncated file rolls back to the database as it was.
+- Extensions are never dropped. The dump's `COMMENT ON EXTENSION` lines, which only the extension's
+  owner may run, are skipped on the way in, together with the sanitizer's `drop_prefixes`.
+  `CREATE EXTENSION IF NOT EXISTS` stays, and does nothing when the extension is there.
+- `--role=app_owner` runs `SET ROLE` after the drop, so the restored objects belong to that role.
+- A custom-format archive (`pg_dump -Fc`) is refused, because it needs pg_restore.
+
+spatie's statement splitter is also wrong for pg_dump output. It treats a backslash inside a `'…'`
+literal as an escape, so a value such as `I\'ve` throws it off, and it silently drops everything after
+it. psql has no such problem.
+
+**MySQL/MariaDB** goes through the **`mysql`** client. Each mysqldump table replaces itself
+(`DROP TABLE IF EXISTS` + `CREATE TABLE`), and the tables the dump doesn't create are dropped after it
+loaded. MySQL commits every DDL statement, so a failure part-way leaves the tables before it replaced
+and the rest as they were, never an empty database.
+
+**What both engines share:**
+- The dump streams in 1 MB chunks: 274 MB of SQL restores with about 8 MB of PHP memory.
+- No statement passes through Laravel's query events, so an error tracker records no SQL breadcrumbs.
+- Credentials reach the client as `PG*` variables or a `0600` option file, never in argv.
+- A `.sql`, `.sql.gz` or `.sql.zst` file all work.
+- A dump of the other engine is refused before anything is dropped.
+
+**Where it runs.** Anywhere, after asking (or with `--force`). In `restore.denied_environments`
+(default `production`) it refuses unless that environment is also listed in
+`DB_SNAPSHOT_SYNC_RESTORE_ALLOWED_ENVIRONMENTS` on the box *and* `--force` is passed.
+
+| Option | Effect |
+|---|---|
+| `name` / `--latest` | A snapshot on the disk by name (with or without the extension), or the newest by the time in its name. Files in `backup.protect` (a committed baseline) are never picked. |
+| `--connection=` | Restore into this connection instead of the default one. |
+| `--role=` | PostgreSQL: `SET ROLE` before the dump. |
+| `--keep-tables` | Don't drop the existing objects first (config `load.drop-tables`). |
+| `--force` | Don't ask. Required without a terminal and in a protected environment. |
+
+The machine running it needs the client: set `DB_SNAPSHOT_SYNC_PSQL` / `DB_SNAPSHOT_SYNC_MYSQL` when
+`psql` / `mysql` isn't on `PATH` (e.g. `/opt/homebrew/opt/libpq/bin/psql`).
 
 ## Configuration
 

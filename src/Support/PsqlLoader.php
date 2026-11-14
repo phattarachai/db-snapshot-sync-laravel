@@ -6,7 +6,6 @@ namespace Phattarachai\DbSnapshotSyncLaravel\Support;
 
 use Generator;
 use Illuminate\Database\Connection;
-use Illuminate\Database\Schema\Grammars\PostgresGrammar;
 use Illuminate\Support\Facades\DB;
 use Phattarachai\DbSnapshotSyncLaravel\Compression\SnapshotStream;
 use RuntimeException;
@@ -29,12 +28,21 @@ use Symfony\Component\Process\Process;
  * sent only once the whole dump has been read and ends in pg_dump's completion
  * trailer — so a failed statement, a read error or a truncated download all roll
  * back to the database as it was instead of leaving it half-filled.
+ *
+ * "Drop" means every object of the connection's schemas that an extension does
+ * not own (tables, views, sequences, types, functions), so a dump restores over
+ * a database that already holds the same objects. Extensions survive, so the
+ * dump's `COMMENT ON EXTENSION` (owner-only) is skipped, with the sanitizer's
+ * pgsql `drop_prefixes`; `CREATE EXTENSION IF NOT EXISTS` stays and is a no-op
+ * when the extension is there.
  */
 class PsqlLoader
 {
     private const int CHUNK_BYTES = 1024 * 1024;
 
     private const string TRAILER = '-- PostgreSQL database dump complete';
+
+    private const array ALWAYS_SKIPPED = ['COMMENT ON EXTENSION '];
 
     public function __construct(private readonly string $binary = 'psql') {}
 
@@ -43,15 +51,18 @@ class PsqlLoader
      *
      * @throws RuntimeException when psql cannot start or any statement fails
      */
-    public function load(string $path, string $connection, bool $dropTables = true): void
+    public function load(string $path, string $connection, bool $dropTables = true, ?string $role = null): void
     {
+        $this->refuseCustomFormat($path);
+
         $db = DB::connection($connection);
-        $drop = $dropTables ? $this->dropAllTablesSql($db) : null;
+        $drop = $dropTables ? $this->dropObjectsSql($db) : null;
+        $setRole = $role === null || $role === '' ? '' : 'SET ROLE "'.str_replace('"', '""', $role)."\";\n";
 
         $process = new Process(
             command: [$this->binary, '--no-psqlrc', '--quiet', '--set', 'ON_ERROR_STOP=1', '--file', '-'],
             env: $this->environment($db),
-            input: $this->input($path, $drop),
+            input: $this->input($path, ($drop ?? '').$setRole),
             timeout: null,
         );
 
@@ -84,32 +95,67 @@ class PsqlLoader
     }
 
     /**
-     * The statement Laravel's dropAllTables() would run, sent ahead of the dump
-     * inside the same transaction instead of committed on its own beforehand.
+     * DROP … IF EXISTS … CASCADE for every object of the connection's schemas that
+     * no extension owns, sent ahead of the dump inside the same transaction
+     * instead of committed on its own beforehand. A table in `dont_drop` (default
+     * spatial_ref_sys) is kept.
      */
-    private function dropAllTablesSql(Connection $db): ?string
+    private function dropObjectsSql(Connection $db): ?string
     {
-        $schema = $db->getSchemaBuilder();
-        $excluded = $db->getConfig('dont_drop') ?? ['spatial_ref_sys'];
-        $tables = [];
-
-        foreach ($schema->getTables($schema->getCurrentSchemaListing()) as $table) {
-            if (array_intersect([$table['name'], $table['schema_qualified_name']], $excluded) === []) {
-                $tables[] = $table['schema_qualified_name'];
-            }
-        }
-
-        if ($tables === []) {
-            return null;
-        }
-
-        $grammar = $db->getSchemaGrammar();
-
-        if (! $grammar instanceof PostgresGrammar) {
+        if ($db->getDriverName() !== 'pgsql') {
             throw new RuntimeException("Connection [{$db->getName()}] is not a pgsql connection; psql cannot load into it.");
         }
 
-        return $grammar->compileDropAllTables($tables).";\n";
+        $schemas = '{'.implode(',', array_map(fn (string $schema): string => '"'.addcslashes($schema, '"\\').'"', $db->getSchemaBuilder()->getCurrentSchemaListing())).'}';
+        $kept = '{'.implode(',', array_map(fn (string $table): string => '"'.addcslashes($table, '"\\').'"', (array) ($db->getConfig('dont_drop') ?? ['spatial_ref_sys']))).'}';
+
+        $statements = array_column($db->select(<<<'SQL'
+            with schemas as (select unnest(?::text[]) as name),
+            relations as (
+                select 1 as ord, format('DROP %s IF EXISTS %I.%I CASCADE;',
+                    case c.relkind when 'v' then 'VIEW' when 'm' then 'MATERIALIZED VIEW' when 'S' then 'SEQUENCE'
+                        when 'f' then 'FOREIGN TABLE' else 'TABLE' end, n.nspname, c.relname) as statement
+                from pg_class c join pg_namespace n on n.oid = c.relnamespace
+                where n.nspname in (select name from schemas)
+                  and c.relkind in ('r', 'p', 'v', 'm', 'S', 'f')
+                  and not c.relispartition
+                  and c.relname <> all(?::text[]) and (n.nspname || '.' || c.relname) <> all(?::text[])
+                  and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'e')
+            ),
+            types as (
+                select 2 as ord, format('DROP %s IF EXISTS %I.%I CASCADE;', case t.typtype when 'd' then 'DOMAIN' else 'TYPE' end, n.nspname, t.typname)
+                from pg_type t join pg_namespace n on n.oid = t.typnamespace
+                where n.nspname in (select name from schemas)
+                  and (t.typtype in ('e', 'd', 'r') or (t.typtype = 'c' and (select relkind from pg_class where oid = t.typrelid) = 'c'))
+                  and not exists (select 1 from pg_depend d where d.classid = 'pg_type'::regclass and d.objid = t.oid and d.deptype = 'e')
+            ),
+            routines as (
+                select 3 as ord, format('DROP %s IF EXISTS %I.%I(%s) CASCADE;',
+                    case p.prokind when 'p' then 'PROCEDURE' when 'a' then 'AGGREGATE' else 'FUNCTION' end,
+                    n.nspname, p.proname, pg_get_function_identity_arguments(p.oid))
+                from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                where n.nspname in (select name from schemas)
+                  and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
+            )
+            select statement from (select * from relations union all select * from types union all select * from routines) objects
+            order by ord, statement
+            SQL, [$schemas, $kept, $kept]), 'statement');
+
+        return $statements === [] ? null : implode("\n", $statements)."\n";
+    }
+
+    /**
+     * pg_dump's custom format (-Fc) is pg_restore's, not psql's.
+     */
+    private function refuseCustomFormat(string $path): void
+    {
+        $stream = SnapshotStream::read($path);
+        $magic = (string) fread($stream->handle, 5);
+        $stream->abort();
+
+        if ($magic === 'PGDMP') {
+            throw new RuntimeException("{$path} is a pg_dump custom-format archive (-Fc); restore it with pg_restore --single-transaction --no-owner. Nothing was loaded.");
+        }
     }
 
     /**
@@ -143,15 +189,17 @@ class PsqlLoader
      *
      * @return Generator<int, string>
      */
-    private function input(string $path, ?string $drop): Generator
+    private function input(string $path, string $preamble): Generator
     {
         $stream = SnapshotStream::read($path);
+        $skipped = $this->skippedPrefixes();
 
-        return (function () use ($stream, $drop): Generator {
+        return (function () use ($stream, $preamble, $skipped): Generator {
             try {
-                yield "BEGIN;\n".($drop ?? '');
+                yield "BEGIN;\n".$preamble;
 
                 $tail = '';
+                $carry = '';
 
                 while (! feof($stream->handle)) {
                     $chunk = fread($stream->handle, self::CHUNK_BYTES);
@@ -161,8 +209,22 @@ class PsqlLoader
                     }
 
                     $tail = substr($tail.$chunk, -256);
+                    $data = $carry.$chunk;
+                    $cut = strrpos($data, "\n");
 
-                    yield $chunk;
+                    if ($cut === false) {
+                        $carry = $data;
+
+                        continue;
+                    }
+
+                    $carry = substr($data, $cut + 1);
+
+                    yield $this->withoutSkippedLines(substr($data, 0, $cut + 1), $skipped);
+                }
+
+                if ($carry !== '') {
+                    yield $this->withoutSkippedLines($carry, $skipped);
                 }
 
                 $stream->close();
@@ -176,5 +238,31 @@ class PsqlLoader
                 $stream->abort();
             }
         })();
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function skippedPrefixes(): array
+    {
+        return array_values(array_unique(array_filter(array_map('strval', [
+            ...self::ALWAYS_SKIPPED,
+            ...(array) config('db-snapshot-sync.sanitizer.pgsql.drop_prefixes', []),
+        ]))));
+    }
+
+    /**
+     * @param  list<string>  $skipped
+     */
+    private function withoutSkippedLines(string $lines, array $skipped): string
+    {
+        if (! array_any($skipped, fn (string $prefix): bool => str_contains($lines, $prefix))) {
+            return $lines;
+        }
+
+        return implode("\n", array_filter(
+            explode("\n", $lines),
+            fn (string $line): bool => ! array_any($skipped, fn (string $prefix): bool => str_starts_with($line, $prefix)),
+        ));
     }
 }

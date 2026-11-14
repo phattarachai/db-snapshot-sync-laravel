@@ -13,10 +13,12 @@ use Phattarachai\DbSnapshotSyncLaravel\Console\DrillCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\ExportCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\InstallCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\PruneCommand;
+use Phattarachai\DbSnapshotSyncLaravel\Console\RestoreCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\SedCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\SyncCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Snapshots\SnapshotFactory;
 use Phattarachai\DbSnapshotSyncLaravel\Snapshots\SnapshotRepository;
+use Phattarachai\DbSnapshotSyncLaravel\Support\MysqlLoader;
 use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
 use Phattarachai\DbSnapshotSyncLaravel\Transfer\SshPuller;
 use Spatie\DbSnapshots\SnapshotFactory as SpatieSnapshotFactory;
@@ -31,6 +33,10 @@ class DbSnapshotSyncServiceProvider extends ServiceProvider
 
         $this->app->bind(PsqlLoader::class, fn (): PsqlLoader => new PsqlLoader(
             (string) config('db-snapshot-sync.psql', 'psql'),
+        ));
+
+        $this->app->bind(MysqlLoader::class, fn (): MysqlLoader => new MysqlLoader(
+            (string) config('db-snapshot-sync.mysql', 'mysql'),
         ));
 
         $this->app->bind(SshPuller::class, fn (): SshPuller => new SshPuller(
@@ -65,6 +71,7 @@ class DbSnapshotSyncServiceProvider extends ServiceProvider
                 ExportCommand::class,
                 InstallCommand::class,
                 PruneCommand::class,
+                RestoreCommand::class,
                 SedCommand::class,
                 SyncCommand::class,
             ]);
