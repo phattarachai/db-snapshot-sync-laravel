@@ -41,11 +41,12 @@ class InstallCommand extends Command
     private function writeEnvKeys(bool $dryRun): void
     {
         $defaults = [
-            'INTERNAL_API_TOKEN' => bin2hex(random_bytes(24)),
-            'DB_SNAPSHOT_SYNC_PROD_URL' => '',
-            'DB_SNAPSHOT_SYNC_UAT_URL' => '',
-            'DB_SNAPSHOT_SYNC_API' => 'false',
-            'DB_SNAPSHOT_SYNC_CA_BUNDLE' => '',
+            'DB_SNAPSHOT_SYNC_PROD_SSH' => '',
+            'DB_SNAPSHOT_SYNC_PROD_PATH' => '',
+            'DB_SNAPSHOT_SYNC_PROD_RUN_AS' => '',
+            'DB_SNAPSHOT_SYNC_UAT_SSH' => '',
+            'DB_SNAPSHOT_SYNC_UAT_PATH' => '',
+            'DB_SNAPSHOT_SYNC_UAT_RUN_AS' => '',
         ];
 
         if ($dryRun) {
@@ -109,7 +110,14 @@ class InstallCommand extends Command
         $this->writeRawHeader('5. Ignore local snapshots — .gitignore:');
         $this->writeRawSnippet("storage/app/snapshots/*.sql.gz\nstorage/app/snapshots/*.sql.zst");
 
-        $this->writeRawHeader('6. On the SOURCE server (production/UAT): set the same INTERNAL_API_TOKEN, set DB_SNAPSHOT_SYNC_API=true, and set this project\'s URL as DB_SNAPSHOT_SYNC_PROD_URL locally.');
+        $this->writeRawHeader('6. Point each source at its box — the ssh alias you log in with, the app\'s directory there, and the app\'s user when you log in as someone else. Commit them in config/db-snapshot-sync.php "sources" (they are not secrets), or set them in .env:');
+        $this->writeRawSnippet(<<<'TXT'
+            DB_SNAPSHOT_SYNC_PROD_SSH=prod-box
+            DB_SNAPSHOT_SYNC_PROD_PATH=/var/www/myapp/current
+            DB_SNAPSHOT_SYNC_PROD_RUN_AS=www-data
+            TXT);
+
+        $this->writeRawHeader('7. On the box nothing is exposed: deploy this package there too (snapshot:sync runs `php artisan snapshot:export` over ssh). With run_as set, your ssh user needs passwordless sudo to that user — check with: ssh prod-box \'sudo -n -u www-data true\'');
     }
 
     private function dumpExclusionSnippet(string $driver): string
@@ -137,7 +145,7 @@ class InstallCommand extends Command
             return;
         }
 
-        $this->info('DB Snapshot Sync installed. Fill the source URLs in .env, then: php artisan snapshot:sync --no-load (dry run).');
+        $this->info('DB Snapshot Sync installed. Fill in the sources, then: php artisan snapshot:sync --no-load (dry run).');
     }
 
     private function writeRawHeader(string $message): void

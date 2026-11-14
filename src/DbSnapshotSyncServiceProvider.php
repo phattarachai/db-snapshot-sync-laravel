@@ -10,6 +10,7 @@ use Override;
 use Phattarachai\DbSnapshotSyncLaravel\Console\BackupCheckCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\BackupCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\DrillCommand;
+use Phattarachai\DbSnapshotSyncLaravel\Console\ExportCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\InstallCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\PruneCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Console\SedCommand;
@@ -17,6 +18,7 @@ use Phattarachai\DbSnapshotSyncLaravel\Console\SyncCommand;
 use Phattarachai\DbSnapshotSyncLaravel\Snapshots\SnapshotFactory;
 use Phattarachai\DbSnapshotSyncLaravel\Snapshots\SnapshotRepository;
 use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
+use Phattarachai\DbSnapshotSyncLaravel\Transfer\SshPuller;
 use Spatie\DbSnapshots\SnapshotFactory as SpatieSnapshotFactory;
 use Spatie\DbSnapshots\SnapshotRepository as SpatieSnapshotRepository;
 
@@ -29,6 +31,10 @@ class DbSnapshotSyncServiceProvider extends ServiceProvider
 
         $this->app->bind(PsqlLoader::class, fn (): PsqlLoader => new PsqlLoader(
             (string) config('db-snapshot-sync.psql', 'psql'),
+        ));
+
+        $this->app->bind(SshPuller::class, fn (): SshPuller => new SshPuller(
+            (string) config('db-snapshot-sync.ssh.binary', 'ssh'),
         ));
 
         $this->app->bind(SpatieSnapshotFactory::class, SnapshotFactory::class);
@@ -56,6 +62,7 @@ class DbSnapshotSyncServiceProvider extends ServiceProvider
                 BackupCheckCommand::class,
                 BackupCommand::class,
                 DrillCommand::class,
+                ExportCommand::class,
                 InstallCommand::class,
                 PruneCommand::class,
                 SedCommand::class,

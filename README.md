@@ -10,12 +10,14 @@
 Rebuild a Laravel developer's local database from production in one command. Extends
 [`spatie/laravel-db-snapshots`](https://github.com/spatie/laravel-db-snapshots) with the three
 pieces every project otherwise reimplements: a driver-aware dump **sanitizer**, a **sync**
-orchestrator, and the token-protected **internal API** the source server exposes.
+orchestrator, and an **export** command the source box runs over ssh. Nothing listens on the source
+and no token exists: whoever can ssh into the box and run artisan as the app's user can pull, and
+those people can already read its `.env` and database.
 
 ```
 snapshot:sync --fresh
-  → trigger a fresh dump on production (internal API)
-  → download the .sql.gz (or .sql.zst)
+  → ssh prod-box 'cd /var/www/app/current && sudo -n -u www-data php artisan snapshot:export --fresh'
+  → the .sql.gz (or .sql.zst) streams back over ssh, checked against its size and sha256
   → snapshot:sed  (strip directives that reject on a local client)
   → load: psql, in one transaction (PostgreSQL)
           snapshot:load --drop-tables --force --stream (MySQL/MariaDB)
@@ -43,10 +45,11 @@ composer require phattarachai/db-snapshot-sync-laravel
 php artisan db-snapshot-sync:install
 ```
 
-The installer publishes the config, writes the env keys (generating a token), and prints the
-source-side snippets you paste into `config/db-snapshots.php`, `config/filesystems.php`,
-`config/database.php` (dump exclusions) and the scheduler. It requires
-`spatie/laravel-db-snapshots` and a `snapshots` filesystem disk on **both** ends.
+The installer publishes the config, writes the source env keys, and prints the source-side
+snippets you paste into `config/db-snapshots.php`, `config/filesystems.php`, `config/database.php`
+(dump exclusions) and the scheduler. It requires `spatie/laravel-db-snapshots` and a `snapshots`
+filesystem disk on **both** ends, and the package deployed on the source box. Then point each
+source at its box: see [SSH sources](#ssh-sources).
 
 ### Laravel Boost
 
@@ -66,12 +69,16 @@ searching `php artisan list`.
   pull the latest snapshot from a source, sanitize, and load into the local DB. Runs in every
   environment except `production` unless configured otherwise; see
   [Where `snapshot:sync` may run](#where-snapshotsync-may-run).
+- **`snapshot:export {--fresh} {--disk=} {--pattern=}`** — runs on the source box (`snapshot:sync`
+  starts it over ssh): writes the newest snapshot, or with `--fresh` a new one it then deletes, to
+  stdout, and its size and sha256 to stderr. It refuses to write to a terminal. `--disk` and
+  `--pattern` (a glob on the file name) stream from another disk, e.g. an app's own dump format.
 
 - **`snapshot:backup`**, **`snapshot:prune {--days=} {--dry-run}`**, **`snapshot:backup-check`**,
   **`snapshot:drill {--disk=} {--connection=}`**: off-site backup, local retention, staleness
   check and restore drill. See [Off-site backup & retention](#off-site-backup--retention).
 
-Start with a dry run once the source URLs are set:
+Start with a dry run once the sources are set:
 
 ```bash
 php artisan snapshot:sync --no-load     # download + sanitize, no DB clobber
@@ -93,15 +100,13 @@ or once, on the source in `config/db-snapshot-sync.php` (the plain-string form k
 ```php
 'sources' => [
     'production' => [
-        'url' => env('DB_SNAPSHOT_SYNC_PROD_URL'),
+        'ssh' => 'prod-box',
+        'path' => '/var/www/shop/current',
         'connection' => 'mysql',
     ],
-    'dev' => env('DB_SNAPSHOT_SYNC_DEV_URL'),   // PG → PG, default connection
+    'dev' => ['ssh' => 'dev-box', 'path' => '/var/www/shop'],   // PG → PG, default connection
 ],
 ```
-
-A source URL is a base URL, so it may carry a path: a source that serves the API under `/api`
-(`/api/internal/snapshots`) is `'url' => 'https://example.com/api'`.
 
 `--connection` wins over the source's `connection`, which wins over `database.default`. The
 connection's driver picks the sanitizer (so a MySQL dump gets its `DEFINER=` lines stripped even
@@ -133,11 +138,87 @@ try {
 }
 ```
 
-The source side is unchanged: the internal API dumps the source app's own default connection.
+The source side is unchanged: `snapshot:export --fresh` dumps the source app's own default connection.
 
-## The source-side API
+## SSH sources
 
-Set `DB_SNAPSHOT_SYNC_API=true` (and the shared `INTERNAL_API_TOKEN`) on production/UAT to expose:
+A source names the box the way you already reach it:
+
+```php
+'sources' => [
+    'production' => [
+        'ssh' => env('DB_SNAPSHOT_SYNC_PROD_SSH', 'prod-box'),          // ~/.ssh/config Host alias
+        'path' => env('DB_SNAPSHOT_SYNC_PROD_PATH', '/var/www/shop/current'),
+        'run_as' => env('DB_SNAPSHOT_SYNC_PROD_RUN_AS', 'www-data'),    // null when you log in as the app's user
+        // 'php' => 'php8.5',                                           // the box's PHP, default `ssh.php`
+        // 'ssh_options' => ['ProxyJump' => 'bastion'],
+    ],
+],
+```
+
+None of it is a secret, so commit the hosts and paths and keep the env vars for a developer whose
+alias differs. `snapshot:sync` then runs
+
+```
+ssh -o BatchMode=yes … prod-box "cd '/var/www/shop/current' && 'sudo' '-n' '-u' 'www-data' 'env' 'HOME=/tmp' 'php' '-d' 'display_errors=stderr' 'artisan' 'snapshot:export' …"
+```
+
+and writes ssh's stdout straight into the snapshots disk, with no copy in PHP's memory. The export's
+last stderr line carries the file's size and sha256; a transfer that doesn't match, a non-zero exit
+or a missing line deletes the download before anything is sanitized or loaded. Every other stderr
+line is shown as `source: …`.
+
+**Who can pull.** Exactly the people who can ssh in and run artisan as the app's user. Revoking a
+laptop's ssh key revokes its pulls; there is no shared secret to rotate. The box's own database
+login does the dump, so no extra database role is needed.
+
+**`run_as` and sudo.** When you log in as yourself and the app runs as `www-data`, artisan runs through
+`sudo -n` (never a prompt), the same way `rh artisan` does. Anyone with full sudo already has that.
+For someone who should pull snapshots but not have root, a sudoers rule for one wrapper is enough:
+
+```bash
+# /usr/local/bin/snapshot-export (root-owned, 0755)
+#!/bin/sh
+cd /var/www/shop/current && exec env HOME=/tmp php -d display_errors=stderr artisan snapshot:export "$@"
+```
+
+```
+# /etc/sudoers.d/snapshot-export   (visudo -f)
+%snapshot-pull ALL=(www-data) NOPASSWD: /usr/local/bin/snapshot-export
+```
+
+and the source names the wrapper instead of a path: `'wrapper' => '/usr/local/bin/snapshot-export'`
+(with `run_as`). The sync then runs `sudo -n -u www-data /usr/local/bin/snapshot-export [--fresh]`.
+
+**The client.** The OpenSSH client that macOS, Linux, WSL2 and Windows 10+ ship, with your own
+`~/.ssh/config`, keys and agent. `BatchMode=yes` means a missing key fails at once instead of
+prompting. A box behind a bastion or an IAP proxy works through `ProxyJump` / `ProxyCommand` in the
+alias or in `ssh_options`. Set `DB_SNAPSHOT_SYNC_SSH` (config `ssh.binary`) when `ssh` isn't on `PATH`.
+
+**On the box.** Deploy this package there (1.6+) with its `snapshot:create` schedule. Nothing else:
+no route, no env flag, no token. Snapshot files only need to be readable by the app's user; keep
+the snapshots directory out of other users' reach (`chmod 2750` on the directory, `0640` files).
+
+**Your own export.** An app with another dump (say a `pg_dump -Fc` of a second database on its own
+disk) can stream it with `snapshot:export --disk=<disk> --pattern='<glob>'`, or write its own export
+command around `Transfer\SnapshotStreamer` and print `ExportResult::toLine()` to stderr. The
+client side is `app(Transfer\SshPuller::class)->pull(SshSource::fromConfig($key, $entry), ['my:export'], $localPath)`,
+which returns the verified `ExportResult` or throws `TransferFailed` with a readable reason.
+
+### Moving off the HTTP API
+
+1. Deploy 1.6 to the source box.
+2. Give each source an `ssh` host and `path` (and `run_as`). An `ssh` host wins over a `url` on the
+   same source, so both can sit there while you switch.
+3. Pull once with `snapshot:sync --no-load` to check.
+4. On the box, unset `DB_SNAPSHOT_SYNC_API` and `INTERNAL_API_TOKEN`; locally, drop
+   `INTERNAL_API_TOKEN`, the `*_URL` keys and `DB_SNAPSHOT_SYNC_CA_BUNDLE`.
+
+## The HTTP API (deprecated)
+
+Removed in 2.0. A source that is a plain URL string, or has a `url` and no `ssh`, still pulls
+through it and prints a deprecation warning. Set `DB_SNAPSHOT_SYNC_API=true` (and the shared
+`INTERNAL_API_TOKEN`) on the source to expose:
 
 | Method | Route | Purpose |
 |---|---|---|
@@ -147,6 +228,7 @@ Set `DB_SNAPSHOT_SYNC_API=true` (and the shared `INTERNAL_API_TOKEN`) on product
 
 `EnsureInternalToken` 404s the whole group in `local` and checks a `hash_equals` bearer token
 otherwise; the routes carry `throttle:5,1`. The consumer sends the matching token from its `.env`.
+A source URL is a base URL, so it may carry a path (`'url' => 'https://example.com/api'`).
 
 ## How a PostgreSQL snapshot is loaded
 
@@ -170,9 +252,10 @@ This needs the PostgreSQL client on the machine running the sync. Set `DB_SNAPSH
 
 ## Configuration
 
-`config/db-snapshot-sync.php` covers the disk name, the compression format, token, source URLs, load flags, the `psql` binary,
-the per-driver sanitizer rules (add a prefix/`sed` expression when a new dump quirk appears), and
-the API's reject-list (never serve a schema-only baseline or a `.sanitized.` intermediate).
+`config/db-snapshot-sync.php` covers the disk name, the compression format, the sources and the
+ssh client, load flags, the `psql` binary, the per-driver sanitizer rules (add a prefix/`sed`
+expression when a new dump quirk appears), and the export's reject-list (`export.reject`: never
+send a schema-only baseline or a `.sanitized.` intermediate).
 
 `dump.exclude_table_data` lists framework caches and transient queues (`cache`, `sessions`,
 `jobs`, `pulse_*`, `telescope_*`, …) whose **data** is skipped when the source builds a sync
@@ -222,7 +305,7 @@ default, replace the `sync` block with the one in the package's
 
 `snapshot:create --compress` writes gzip (`.sql.gz`) by default, as spatie does. Set
 `DB_SNAPSHOT_SYNC_COMPRESSION=zstd` (config `compression.format`) to write `.sql.zst` instead; it
-applies to the scheduled snapshot and to the one the API builds for `--fresh` alike. zstd matches
+applies to the scheduled snapshot and to the one `snapshot:export --fresh` builds alike. zstd matches
 repeats across the whole dump where gzip's 32 KB window cannot, so a pg_dump shrinks far more: one
 4.17 GB dump came to 251 MB with gzip and 21 MB with `zstd -10 -T0`, in about a second.
 
@@ -240,7 +323,7 @@ the source, and on every machine that syncs a zstd snapshot (`brew install zstd`
 adds `--ultra`) and `DB_SNAPSHOT_SYNC_ZSTD_THREADS` (default `0`, every core) tune the writer. A
 corrupt or truncated `.sql.zst` fails the load or sanitize instead of loading part of it.
 
-### Sources with an incomplete TLS chain
+### HTTP sources with an incomplete TLS chain (deprecated)
 
 Some edges serve the leaf certificate but omit an intermediate. A browser or system `curl` fetches
 the missing intermediate via the certificate's AIA extension, but PHP's cURL does not, so the sync

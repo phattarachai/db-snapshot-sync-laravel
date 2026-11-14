@@ -9,6 +9,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Laravel\Pulse\Facades\Pulse;
 use Phattarachai\DbSnapshotSyncLaravel\Compression\Compression;
@@ -17,6 +18,9 @@ use Phattarachai\DbSnapshotSyncLaravel\Sanitizers\SanitizerFactory;
 use Phattarachai\DbSnapshotSyncLaravel\Support\CaBundle;
 use Phattarachai\DbSnapshotSyncLaravel\Support\DumpEngine;
 use Phattarachai\DbSnapshotSyncLaravel\Support\PsqlLoader;
+use Phattarachai\DbSnapshotSyncLaravel\Transfer\SshPuller;
+use Phattarachai\DbSnapshotSyncLaravel\Transfer\SshSource;
+use Phattarachai\DbSnapshotSyncLaravel\Transfer\TransferFailed;
 use RuntimeException;
 
 class SyncCommand extends Command
@@ -44,7 +48,13 @@ class SyncCommand extends Command
             return self::FAILURE;
         }
 
-        $source = $this->resolveSource();
+        try {
+            $source = $this->resolveSource();
+        } catch (InvalidArgumentException $e) {
+            $this->error($e->getMessage());
+
+            return self::FAILURE;
+        }
 
         if ($source === null) {
             $this->error("Unknown or unconfigured --source={$this->option('source')}.");
@@ -52,7 +62,6 @@ class SyncCommand extends Command
             return self::FAILURE;
         }
 
-        $baseUrl = $source['url'];
         $connection = $this->targetConnection($source['connection']);
 
         try {
@@ -64,31 +73,34 @@ class SyncCommand extends Command
             return self::FAILURE;
         }
 
-        $token = config('db-snapshot-sync.token');
+        if ($source['ssh'] instanceof SshSource) {
+            $this->info("Source: {$source['ssh']->label()}");
+            $this->info("Target connection: {$connection} ({$driver})");
 
-        if (! is_string($token) || $token === '') {
-            $this->error('INTERNAL_API_TOKEN is not set in your local .env.');
+            try {
+                $downloaded = $this->pullOverSsh($source['ssh']);
+            } catch (TransferFailed $e) {
+                $this->error($e->getMessage());
 
-            return self::FAILURE;
+                return self::FAILURE;
+            }
+        } else {
+            $client = $this->httpClient((string) $source['url']);
+
+            if (! $client instanceof PendingRequest) {
+                return self::FAILURE;
+            }
+
+            $this->info("Source: {$source['url']}");
+            $this->info("Target connection: {$connection} ({$driver})");
+            $this->warn('HTTP sources, the internal API and INTERNAL_API_TOKEN are deprecated and removed in 2.0. Give this source an ssh host and path instead (README: "SSH sources").');
+
+            if ($this->option('fresh')) {
+                $this->triggerFreshSnapshot($client);
+            }
+
+            $downloaded = $this->downloadLatest($client);
         }
-
-        $caBundle = config('db-snapshot-sync.http.ca_bundle');
-        $verify = CaBundle::resolve(is_string($caBundle) ? $caBundle : null);
-
-        $client = Http::acceptJson()
-            ->baseUrl($baseUrl)
-            ->withToken($token)
-            ->withOptions(['verify' => $verify])
-            ->timeout(0);
-
-        $this->info("Source: {$baseUrl}");
-        $this->info("Target connection: {$connection} ({$driver})");
-
-        if ($this->option('fresh')) {
-            $this->triggerFreshSnapshot($client);
-        }
-
-        $downloaded = $this->downloadLatest($client);
 
         if (! $this->engineMatches($downloaded, $connection, $driver)) {
             return self::FAILURE;
@@ -127,26 +139,74 @@ class SyncCommand extends Command
     }
 
     /**
-     * A source is either a plain base URL or ['url' => ..., 'connection' => ...].
+     * A source is ['ssh' => alias, 'path' => app dir, 'run_as' => user, 'connection' => ...]; an ssh
+     * host wins over a 'url'. A plain string, or an entry with only a 'url', is a deprecated HTTP source.
      *
-     * @return array{url: string, connection: ?string}|null
+     * @return array{ssh: ?SshSource, url: ?string, connection: ?string}|null
+     *
+     * @throws InvalidArgumentException when an ssh source has no path
      */
     private function resolveSource(): ?array
     {
         $key = $this->option('source') === 'prod' ? 'production' : (string) $this->option('source');
         $entry = config("db-snapshot-sync.sources.{$key}");
+        $connection = is_array($entry) ? ($entry['connection'] ?? null) : null;
+        $connection = is_string($connection) && $connection !== '' ? $connection : null;
+
+        if (is_array($entry) && is_string($entry['ssh'] ?? null) && $entry['ssh'] !== '') {
+            return ['ssh' => SshSource::fromConfig($key, $entry), 'url' => null, 'connection' => $connection];
+        }
+
         $url = is_array($entry) ? ($entry['url'] ?? null) : $entry;
 
         if (! is_string($url) || $url === '') {
             return null;
         }
 
-        $connection = is_array($entry) ? ($entry['connection'] ?? null) : null;
+        return ['ssh' => null, 'url' => $url, 'connection' => $connection];
+    }
 
-        return [
-            'url' => $url,
-            'connection' => is_string($connection) && $connection !== '' ? $connection : null,
-        ];
+    /**
+     * Run snapshot:export on the box and write what it streams into the snapshots disk.
+     */
+    private function pullOverSsh(SshSource $source): string
+    {
+        $this->info($this->option('fresh')
+            ? 'Building a fresh snapshot on the source and streaming it (may take several minutes)...'
+            : 'Streaming the latest snapshot...');
+
+        $rawName = $this->rawDownloadName();
+        $disk = Storage::disk((string) config('db-snapshot-sync.disk'));
+
+        $result = app(SshPuller::class)->pull(
+            $source,
+            ['snapshot:export', ...($this->option('fresh') ? ['--fresh'] : [])],
+            $disk->path($rawName),
+            fn (string $line) => $this->line("  <fg=gray>source:</> {$line}"),
+        );
+
+        $this->info("Received {$result->name} (".number_format($result->size).' bytes, sha256 verified).');
+
+        return $this->nameByContent($rawName);
+    }
+
+    private function httpClient(string $baseUrl): ?PendingRequest
+    {
+        $token = config('db-snapshot-sync.token');
+
+        if (! is_string($token) || $token === '') {
+            $this->error('INTERNAL_API_TOKEN is not set in your local .env.');
+
+            return null;
+        }
+
+        $caBundle = config('db-snapshot-sync.http.ca_bundle');
+
+        return Http::acceptJson()
+            ->baseUrl($baseUrl)
+            ->withToken($token)
+            ->withOptions(['verify' => CaBundle::resolve(is_string($caBundle) ? $caBundle : null)])
+            ->timeout(0);
     }
 
     private function targetConnection(?string $sourceConnection): string
@@ -192,24 +252,40 @@ class SyncCommand extends Command
     {
         $this->info('Downloading latest snapshot...');
 
-        $disk = Storage::disk((string) config('db-snapshot-sync.disk'));
-        $stem = 'sync_'.now()->format('Y-m-d_H-i-s');
-        $rawName = $stem.'.download';
-        $rawPath = $disk->path($rawName);
+        $rawName = $this->rawDownloadName();
+
+        $client->withOptions(['sink' => Storage::disk((string) config('db-snapshot-sync.disk'))->path($rawName)])
+            ->get('/'.$this->apiPath('snapshots/latest'))
+            ->throw();
+
+        return $this->nameByContent($rawName);
+    }
+
+    /**
+     * `sync_<timestamp>.download` on the snapshots disk, its directory created.
+     */
+    private function rawDownloadName(): string
+    {
+        $rawName = 'sync_'.now()->format('Y-m-d_H-i-s').'.download';
+        $rawPath = Storage::disk((string) config('db-snapshot-sync.disk'))->path($rawName);
 
         if (! is_dir(dirname($rawPath))) {
             mkdir(dirname($rawPath), 0o755, true);
         }
 
-        $client->withOptions(['sink' => $rawPath])
-            ->get('/'.$this->apiPath('snapshots/latest'))
-            ->throw();
+        return $rawName;
+    }
 
-        // The source may serve a gzip (.sql.gz), zstd (.sql.zst) or plain (.sql)
-        // dump. Name the local file by the payload's real type — sniffed from its
-        // magic bytes — so the sanitizer and snapshot:load agree with the content
-        // instead of a guessed extension.
-        $localName = $stem.Compression::sniff($rawPath)->suffix();
+    /**
+     * The source may send a gzip (.sql.gz), zstd (.sql.zst) or plain (.sql)
+     * dump. Name the local file by the payload's real type — sniffed from its
+     * magic bytes — so the sanitizer and snapshot:load agree with the content
+     * instead of a guessed extension.
+     */
+    private function nameByContent(string $rawName): string
+    {
+        $disk = Storage::disk((string) config('db-snapshot-sync.disk'));
+        $localName = Str::beforeLast($rawName, '.download').Compression::sniff($disk->path($rawName))->suffix();
         $disk->move($rawName, $localName);
 
         return $localName;
