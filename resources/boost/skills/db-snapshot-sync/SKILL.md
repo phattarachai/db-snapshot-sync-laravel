@@ -1,6 +1,6 @@
 ---
 name: db-snapshot-sync
-description: 'Pull a production (or UAT) database down into the local database with `php artisan snapshot:sync` from phattarachai/db-snapshot-sync-laravel, over ssh, and restore a snapshot safely with `snapshot:restore` (never spatie''s `snapshot:load`): options, what they overwrite, the environment guards, ssh source setup, moving off the deprecated HTTP API, and troubleshooting. Use when asked to "pull the prod DB to local", "restore a snapshot", "roll back the database", "refresh local data", "copy production data down", "sync the database", "load a production snapshot", "ดึง DB production ลงมา", "dump production ลงมา", "ดึงข้อมูลจริงมาลง local", "อัปเดตข้อมูล local ให้ตรงกับ prod", when setting up snapshot:sync or snapshot:export, or when snapshot:sync fails.'
+description: 'Pull a production (or UAT) database down into the local database with `php artisan snapshot:sync` from phattarachai/db-snapshot-sync-laravel, over ssh, and restore a large or complex snapshot safely with `snapshot:restore` (spatie''s `snapshot:load` stays the default for small dumps such as a test DB): options, what they overwrite, the environment guards, ssh source setup, moving off the deprecated HTTP API, and troubleshooting. Use when asked to "pull the prod DB to local", "restore a snapshot", "roll back the database", "refresh local data", "copy production data down", "sync the database", "load a production snapshot", "ดึง DB production ลงมา", "dump production ลงมา", "ดึงข้อมูลจริงมาลง local", "อัปเดตข้อมูล local ให้ตรงกับ prod", when setting up snapshot:sync or snapshot:export, or when snapshot:sync fails.'
 ---
 
 # DB Snapshot Sync
@@ -50,9 +50,15 @@ php artisan snapshot:restore --latest                 # newest by the time in it
 php artisan snapshot:restore 2026-11-14_04-00-01 --force
 ```
 
-**Use this, never spatie's `snapshot:load`, on any machine and any box.** `snapshot:load` (default
-mode) drops every table, then reads the whole dump into one PHP string: a large dump runs out of
-memory (or the error tracker's SQL breadcrumb does) and leaves the database empty.
+**spatie's `snapshot:load` is the default; switch to `snapshot:restore` when a dump gets large or
+complex.** Keep using `snapshot:load` where it already works, such as priming a test database from a
+small committed dump (`php artisan snapshot:load testing --env=testing --force` in `composer test` or
+CI); don't rewrite those. Use `snapshot:restore` for a production or UAT-sized dump (what
+`snapshot:sync` pulls), a dump big enough that reading it whole into PHP memory is a risk, or a
+database you can't afford to leave empty if the load fails. That's because `snapshot:load` (default
+mode) drops every table first, then reads the whole dump into one PHP string: a large dump runs out of
+memory (or the error tracker's SQL breadcrumb does) and leaves the database empty. `snapshot:restore`
+streams instead:
 
 - PostgreSQL: streamed into `psql` in one transaction. The old objects (tables, views, sequences,
   types, functions; never extensions) are dropped inside it, so a failure or a truncated file
