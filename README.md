@@ -229,10 +229,15 @@ php artisan snapshot:restore --latest --connection=mysql --keep-tables
 ```
 
 `snapshot:restore` loads a snapshot from the snapshots disk into a connection, and `snapshot:sync`'s
-load step uses the same code. Use it instead of spatie's `snapshot:load`. That command's default mode
-drops every table first, then reads the whole dump into one PHP string and runs it as one statement.
-A few hundred MB of `--inserts` dump runs out of memory, or an error tracker serialising that statement
-as an SQL breadcrumb does, and the database is left empty.
+load step uses the same code.
+
+spatie's `snapshot:load` stays the default for small dumps, such as priming a test database from a
+committed `testing.sql` (`php artisan snapshot:load testing --env=testing --force`). Switch to
+`snapshot:restore` once a dump gets large or complex: a production or UAT-sized dump, one too big to
+read whole into PHP memory, or a database you can't afford to leave empty if the load fails.
+`snapshot:load`'s default mode drops every table first, then reads the whole dump into one PHP string
+and runs it as one statement. A few hundred MB of `--inserts` dump runs out of memory, or an error
+tracker serialising that statement as an SQL breadcrumb does, and the database is left empty.
 
 **PostgreSQL** goes through **`psql`**, pg_dump's own parser, in one transaction:
 - It first drops every object of the connection's schemas that no extension owns: tables, views,
