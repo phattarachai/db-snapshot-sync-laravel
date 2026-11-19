@@ -239,9 +239,18 @@ read whole into PHP memory, or a database you can't afford to leave empty if the
 and runs it as one statement. A few hundred MB of `--inserts` dump runs out of memory, or an error
 tracker serialising that statement as an SQL breadcrumb does, and the database is left empty.
 
+On PostgreSQL, `snapshot:load` drops every object of the connection's schemas that no extension owns
+before it loads (the same set `snapshot:restore` drops, listed below), not only the tables. pg_dump
+writes `CREATE COLLATION`, `CREATE TYPE`, `CREATE DOMAIN` and `CREATE FUNCTION` without `IF NOT EXISTS`,
+so a tables-only drop fails the second load into the same database (`collation "…" already exists`),
+as on a CI runner that keeps its testing database between jobs. The objects are dropped one by one,
+not with `DROP SCHEMA public CASCADE`, so the schema keeps its owner, its grants, the default
+privileges an owner role grants the app role, and its extensions. MySQL keeps spatie's drop.
+
 **PostgreSQL** goes through **`psql`**, pg_dump's own parser, in one transaction:
 - It first drops every object of the connection's schemas that no extension owns: tables, views,
-  sequences, types and functions. A dump therefore restores over a database that already holds them.
+  sequences, types, domains, functions, collations and text search configurations. A dump therefore
+  restores over a database that already holds them.
 - Then it sends the dump with `ON_ERROR_STOP=1`. `COMMIT` is sent only after the whole file has been
   read and it ends with pg_dump's `-- PostgreSQL database dump complete` trailer.
 - A failed statement, a read error or a truncated file rolls back to the database as it was.
