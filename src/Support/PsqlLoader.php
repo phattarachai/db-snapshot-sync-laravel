@@ -30,7 +30,8 @@ use Symfony\Component\Process\Process;
  * back to the database as it was instead of leaving it half-filled.
  *
  * "Drop" means every object of the connection's schemas that an extension does
- * not own (tables, views, sequences, types, functions), so a dump restores over
+ * not own (tables, views, sequences, types, domains, functions, collations — see
+ * PostgresObjects), so a dump restores over
  * a database that already holds the same objects. Extensions survive, so the
  * dump's `COMMENT ON EXTENSION` (owner-only) is skipped, with the sanitizer's
  * pgsql `drop_prefixes`; `CREATE EXTENSION IF NOT EXISTS` stays and is a no-op
@@ -95,10 +96,9 @@ class PsqlLoader
     }
 
     /**
-     * DROP … IF EXISTS … CASCADE for every object of the connection's schemas that
-     * no extension owns, sent ahead of the dump inside the same transaction
-     * instead of committed on its own beforehand. A table in `dont_drop` (default
-     * spatial_ref_sys) is kept.
+     * DROP … IF EXISTS … CASCADE for every object of the connection's schemas
+     * (see PostgresObjects), sent ahead of the dump inside the same transaction
+     * instead of committed on its own beforehand.
      */
     private function dropObjectsSql(Connection $db): ?string
     {
@@ -106,40 +106,7 @@ class PsqlLoader
             throw new RuntimeException("Connection [{$db->getName()}] is not a pgsql connection; psql cannot load into it.");
         }
 
-        $schemas = '{'.implode(',', array_map(fn (string $schema): string => '"'.addcslashes($schema, '"\\').'"', $db->getSchemaBuilder()->getCurrentSchemaListing())).'}';
-        $kept = '{'.implode(',', array_map(fn (string $table): string => '"'.addcslashes($table, '"\\').'"', (array) ($db->getConfig('dont_drop') ?? ['spatial_ref_sys']))).'}';
-
-        $statements = array_column($db->select(<<<'SQL'
-            with schemas as (select unnest(?::text[]) as name),
-            relations as (
-                select 1 as ord, format('DROP %s IF EXISTS %I.%I CASCADE;',
-                    case c.relkind when 'v' then 'VIEW' when 'm' then 'MATERIALIZED VIEW' when 'S' then 'SEQUENCE'
-                        when 'f' then 'FOREIGN TABLE' else 'TABLE' end, n.nspname, c.relname) as statement
-                from pg_class c join pg_namespace n on n.oid = c.relnamespace
-                where n.nspname in (select name from schemas)
-                  and c.relkind in ('r', 'p', 'v', 'm', 'S', 'f')
-                  and not c.relispartition
-                  and c.relname <> all(?::text[]) and (n.nspname || '.' || c.relname) <> all(?::text[])
-                  and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'e')
-            ),
-            types as (
-                select 2 as ord, format('DROP %s IF EXISTS %I.%I CASCADE;', case t.typtype when 'd' then 'DOMAIN' else 'TYPE' end, n.nspname, t.typname)
-                from pg_type t join pg_namespace n on n.oid = t.typnamespace
-                where n.nspname in (select name from schemas)
-                  and (t.typtype in ('e', 'd', 'r') or (t.typtype = 'c' and (select relkind from pg_class where oid = t.typrelid) = 'c'))
-                  and not exists (select 1 from pg_depend d where d.classid = 'pg_type'::regclass and d.objid = t.oid and d.deptype = 'e')
-            ),
-            routines as (
-                select 3 as ord, format('DROP %s IF EXISTS %I.%I(%s) CASCADE;',
-                    case p.prokind when 'p' then 'PROCEDURE' when 'a' then 'AGGREGATE' else 'FUNCTION' end,
-                    n.nspname, p.proname, pg_get_function_identity_arguments(p.oid))
-                from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-                where n.nspname in (select name from schemas)
-                  and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
-            )
-            select statement from (select * from relations union all select * from types union all select * from routines) objects
-            order by ord, statement
-            SQL, [$schemas, $kept, $kept]), 'statement');
+        $statements = PostgresObjects::dropStatements($db);
 
         return $statements === [] ? null : implode("\n", $statements)."\n";
     }

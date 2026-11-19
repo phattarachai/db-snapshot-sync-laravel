@@ -179,12 +179,14 @@ function pgDumpWithEveryKind(): string
         '--',
         'CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;',
         "COMMENT ON EXTENSION pg_trgm IS 'only the extension owner may run this';",
+        "CREATE COLLATION public.natural_sort (provider = icu, locale = 'und-u-kn');",
         "CREATE TYPE public.mood AS ENUM ('happy', 'sad');",
+        'CREATE DOMAIN public.positive AS integer CHECK (VALUE > 0);',
         'CREATE FUNCTION public.answer() RETURNS integer LANGUAGE sql AS $$ SELECT 42 $$;',
         'CREATE SEQUENCE public.standalone_seq;',
-        'CREATE TABLE public.people (id bigint NOT NULL, mood public.mood);',
+        'CREATE TABLE public.people (id bigint NOT NULL, name text COLLATE public.natural_sort, mood public.mood, rank public.positive);',
         'CREATE VIEW public.happy_people AS SELECT id FROM public.people WHERE mood = \'happy\';',
-        "INSERT INTO public.people VALUES (1, 'happy'), (2, 'sad');",
+        "INSERT INTO public.people VALUES (1, 'a10', 'happy', 1), (2, 'a9', 'sad', 2);",
         '',
         '--',
         '-- PostgreSQL database dump complete',
@@ -193,7 +195,7 @@ function pgDumpWithEveryKind(): string
     ]);
 }
 
-it('restores over a database that already holds the same views, types, sequences and functions, keeping extensions', function (): void {
+it('restores over a database that already holds the same views, collations, types, domains, sequences and functions, keeping extensions', function (): void {
     file_put_contents($this->dumpPath, pgDumpWithEveryKind());
 
     (new PsqlLoader)->load($this->dumpPath, 'pgsql');

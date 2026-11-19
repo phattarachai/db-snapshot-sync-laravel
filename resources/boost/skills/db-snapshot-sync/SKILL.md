@@ -55,13 +55,15 @@ complex.** Keep using `snapshot:load` where it already works, such as priming a 
 small committed dump (`php artisan snapshot:load testing --env=testing --force` in `composer test` or
 CI); don't rewrite those. Use `snapshot:restore` for a production or UAT-sized dump (what
 `snapshot:sync` pulls), a dump big enough that reading it whole into PHP memory is a risk, or a
-database you can't afford to leave empty if the load fails. That's because `snapshot:load` (default
-mode) drops every table first, then reads the whole dump into one PHP string: a large dump runs out of
+database you can't afford to leave empty if the load fails. (On PostgreSQL both drop every object
+of the schema first, collations, types and functions included, so a committed dump reloads into the
+same database; a hand-added `IF NOT EXISTS` in it isn't needed.) That's because `snapshot:load` (default
+mode) drops the old objects first, then reads the whole dump into one PHP string: a large dump runs out of
 memory (or the error tracker's SQL breadcrumb does) and leaves the database empty. `snapshot:restore`
 streams instead:
 
 - PostgreSQL: streamed into `psql` in one transaction. The old objects (tables, views, sequences,
-  types, functions; never extensions) are dropped inside it, so a failure or a truncated file
+  types, domains, functions, collations; never extensions) are dropped inside it, so a failure or a truncated file
   leaves the database as it was. `COMMENT ON EXTENSION` lines are skipped. `--role=<owner>` runs
   `SET ROLE` first so restored objects belong to the app's role. A `pg_dump -Fc` archive is refused
   (that needs pg_restore).

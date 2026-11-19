@@ -11,11 +11,17 @@ use League\Flysystem\FilesystemOperator;
 use Override;
 use Phattarachai\DbSnapshotSyncLaravel\Compression\Compression;
 use Phattarachai\DbSnapshotSyncLaravel\Compression\SnapshotStream;
+use Phattarachai\DbSnapshotSyncLaravel\Support\PostgresObjects;
 use Spatie\DbSnapshots\Snapshot as SpatieSnapshot;
 
 /**
  * spatie's snapshot, also loading a .sql.zst. Plain and gzip snapshots take
  * spatie's own code path unchanged.
+ *
+ * On PostgreSQL the drop before a load clears every object the dump recreates
+ * (collations, types, domains, functions, views, sequences — see
+ * PostgresObjects), not only the tables, so the same dump loads twice into one
+ * database. Other drivers keep spatie's dropAllTables().
  */
 class Snapshot extends SpatieSnapshot
 {
@@ -27,6 +33,26 @@ class Snapshot extends SpatieSnapshot
             $this->compressionExtension = Compression::Zstd->extension();
             $this->name = pathinfo(pathinfo($fileName, PATHINFO_FILENAME), PATHINFO_FILENAME);
         }
+    }
+
+    #[Override]
+    protected function dropAllCurrentTables(): void
+    {
+        $db = DB::connection(DB::getDefaultConnection());
+
+        if ($db->getDriverName() !== 'pgsql') {
+            parent::dropAllCurrentTables();
+
+            return;
+        }
+
+        $statements = PostgresObjects::dropStatements($db);
+
+        if ($statements !== []) {
+            $db->transaction(fn () => $db->unprepared(implode("\n", $statements)));
+        }
+
+        DB::reconnect();
     }
 
     #[Override]
